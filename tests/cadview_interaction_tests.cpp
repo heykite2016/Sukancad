@@ -1166,6 +1166,17 @@ int main(int argc, char *argv[])
         writer.setResolution(144);
         writer.setTitle(QStringLiteral("CAD Lens PDF Test"));
         QPainter painter(&writer);
+        const int pageWidth = writer.width();
+        const int pageHeight = writer.height();
+        const QColor topBand(QStringLiteral("#d12a2a"));
+        const QColor bottomBand(QStringLiteral("#245bd1"));
+        painter.fillRect(
+            QRectF(0.0, 0.0, pageWidth, pageHeight / 8.0),
+            topBand);
+        painter.fillRect(
+            QRectF(0.0, pageHeight * 7.0 / 8.0,
+                   pageWidth, pageHeight / 8.0),
+            bottomBand);
         painter.setPen(QPen(Qt::black, 2.0));
         painter.drawRect(QRectF(60.0, 60.0, 420.0, 280.0));
         painter.drawLine(QPointF(60.0, 340.0),
@@ -1185,6 +1196,26 @@ int main(int argc, char *argv[])
         std::fprintf(stderr, "PDF load failed: %s\n",
                      qPrintable(pdfError));
         return fail("PDF drawing was not loaded or rendered");
+    }
+    const QImage &renderedPdfPage = pdfDocument->pdfPages.first().image;
+    const QColor renderedTop =
+        renderedPdfPage.pixelColor(
+            renderedPdfPage.width() / 2,
+            qRound(renderedPdfPage.height() * 0.04));
+    const QColor renderedBottom =
+        renderedPdfPage.pixelColor(
+            renderedPdfPage.width() / 2,
+            qRound(renderedPdfPage.height() * 0.96));
+    if (renderedTop.red() < 160
+        || renderedTop.red() <= renderedTop.blue()
+        || renderedBottom.blue() < 160
+        || renderedBottom.blue() <= renderedBottom.red()) {
+        std::fprintf(
+            stderr,
+            "PDF orientation mismatch: top=%s bottom=%s\n",
+            qPrintable(renderedTop.name()),
+            qPrintable(renderedBottom.name()));
+        return fail("PDF page orientation is vertically flipped");
     }
     CadView pdfView;
     pdfView.resize(900, 700);

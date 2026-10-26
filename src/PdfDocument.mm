@@ -65,8 +65,7 @@ QImage renderPage(PDFPage *page, PDFDocument *document, int pageIndex,
         context, CGRectMake(0.0, 0.0, pixelSize.width(),
                             pixelSize.height()));
     CGContextSaveGState(context);
-    CGContextTranslateCTM(context, 0.0, pixelSize.height());
-    CGContextScaleCTM(context, scale, -scale);
+    CGContextScaleCTM(context, scale, scale);
     [page drawWithBox:kPDFDisplayBoxCropBox toContext:context];
     Q_UNUSED(document);
     Q_UNUSED(pageIndex);
