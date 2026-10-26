@@ -38,6 +38,7 @@ enum class MeasuringUnit {
 struct CadLayer {
     QString name;
     QColor color = QColor(QStringLiteral("#d9e1ea"));
+    QColor sourceColor;
     bool visible = true;
     bool locked = false;
     int lineWeight = 31;
@@ -78,6 +79,7 @@ struct CadPdfPage {
     QString name;
     QRectF pageRect;
     QImage image;
+    QImage printImage;
 };
 
 struct CadEntity {
@@ -85,6 +87,7 @@ struct CadEntity {
     quint64 sourceHandle = 0;
     QString layer;
     QColor color = QColor(QStringLiteral("#d9e1ea"));
+    QColor sourceColor;
     int lineWeight = 31;
     QVector<QPointF> points;
     bool closed = false;

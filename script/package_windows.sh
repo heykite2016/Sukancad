@@ -7,7 +7,7 @@ QT_WIN="${CADLENS_WIN_QT_ROOT:-$HOME/Library/Caches/CadLens/Qt/6.8.3/windows-llv
 MINGW_ROOT="${CADLENS_LLVM_MINGW_ROOT:-$HOME/Library/Caches/CadLens/toolchains/llvm-mingw-20261020-ucrt-macos-universal}"
 MAKENSIS="${CADLENS_MAKENSIS:-/tmp/nsis-3.11-src/build/urelease/makensis/makensis}"
 NSISDIR="${CADLENS_NSISDIR:-/tmp/nsis-bin/nsis-3.11}"
-VERSION="1.0.0"
+VERSION="1.0.1"
 ZIP_OUT="$ROOT_DIR/dist/CadLens-${VERSION}-windows10-x64-portable.zip"
 SETUP_OUT="$ROOT_DIR/dist/CadLens-${VERSION}-windows10-x64-setup.exe"
 

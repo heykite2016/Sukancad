@@ -692,7 +692,8 @@ private:
             if (layer.name.isEmpty()) {
                 layer.name = QStringLiteral("0");
             }
-            layer.color = cmcColor(source->color);
+            layer.sourceColor = cmcColor(source->color);
+            layer.color = layer.sourceColor;
             layer.color = visibleColor(layer.color);
             layer.visible = !source->off && !source->frozen;
             layer.locked = source->locked;
@@ -724,11 +725,18 @@ private:
                 m_document.layers[layerFound.value()];
             result.layer = layer.name;
             result.color = layer.color;
+            result.sourceColor =
+                layer.sourceColor.isValid()
+                ? layer.sourceColor : layer.color;
             result.lineWeight = layer.lineWeight;
         } else {
             result.layer = QStringLiteral("0");
             if (!m_document.layers.isEmpty()) {
                 result.color = m_document.layers.first().color;
+                result.sourceColor =
+                    m_document.layers.first().sourceColor.isValid()
+                    ? m_document.layers.first().sourceColor
+                    : m_document.layers.first().color;
                 result.lineWeight =
                     m_document.layers.first().lineWeight;
             }
@@ -744,6 +752,9 @@ private:
                              });
             if (inherited != m_document.layers.cend()) {
                 result.color = inherited->color;
+                    result.sourceColor =
+                        inherited->sourceColor.isValid()
+                        ? inherited->sourceColor : inherited->color;
                 result.lineWeight = inherited->lineWeight;
             }
         }
@@ -753,7 +764,9 @@ private:
                 dwg_ent_get_color(const_cast<Dwg_Object_Entity *>(common),
                                   &colorError);
             if (color && color->index != 256) {
-                result.color = cmcColor(*color, result.color);
+                result.sourceColor =
+                    cmcColor(*color, result.sourceColor);
+                result.color = result.sourceColor;
             }
             result.lineWeight = common->linewt;
         }

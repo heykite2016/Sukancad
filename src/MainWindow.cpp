@@ -2625,6 +2625,8 @@ void MainWindow::showHelp()
         <ul>
           <li>测量修改后自动写入系统缓存目录，再次打开自动恢复。</li>
           <li>“框选打印与预览”先两点框选范围，再在预览右侧直接选择打印机、纸张、方向和份数。</li>
+          <li>PDF 输出可选择 CAD 原色或全黑模式；全黑模式保持白色背景，图纸、文字、尺寸和填充均输出为黑色。</li>
+          <li>打印到 PDF 使用 1200 DPI，并对 PDF 页面重新进行高分辨率栅格化。</li>
           <li>纸张或方向改变后预览立即更新；打印标尺可随时显示或关闭。</li>
           <li>打印设置提供“打印到 PDF”；PDF 默认文件名与当前图纸名一致。</li>
         </ul>
@@ -2789,6 +2791,11 @@ void MainWindow::showPrintPreview(const QRectF &worldArea)
         QStringLiteral("纵向"), int(QPageLayout::Portrait));
     orientationCombo->setCurrentIndex(
         worldArea.width() >= worldArea.height() ? 0 : 1);
+    auto *colorModeCombo = new QComboBox;
+    colorModeCombo->addItem(
+        QStringLiteral("黑白（所有 CAD 元素为黑色）"), true);
+    colorModeCombo->addItem(
+        QStringLiteral("彩色（使用 CAD 原色）"), false);
     auto *copies = new QSpinBox;
     copies->setRange(1, 99);
     copies->setValue(1);
@@ -2804,6 +2811,7 @@ void MainWindow::showPrintPreview(const QRectF &worldArea)
     form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     form->addRow(QStringLiteral("纸张"), paperCombo);
     form->addRow(QStringLiteral("方向"), orientationCombo);
+    form->addRow(QStringLiteral("输出颜色"), colorModeCombo);
     form->addRow(QStringLiteral("份数"), copies);
     form->addRow(QString(), ruler);
     settingsLayout->addLayout(form);
@@ -2861,7 +2869,9 @@ void MainWindow::showPrintPreview(const QRectF &worldArea)
                 int(longEdge));
         }
         previewCanvas->setPage(
-            m_view->renderPrintAreaToImage(worldArea, pixelSize),
+            m_view->renderPrintAreaToImage(
+                worldArea, pixelSize,
+                colorModeCombo->currentData().toBool()),
             millimeters);
     };
     const auto refreshPrinters = [&] {
@@ -2952,6 +2962,7 @@ void MainWindow::showPrintPreview(const QRectF &worldArea)
             }
             output.setOutputFormat(QPrinter::PdfFormat);
             output.setOutputFileName(path);
+            output.setResolution(1200);
         } else {
             output.setPrinterName(
                 printerCombo->currentData().toString());
@@ -2960,7 +2971,9 @@ void MainWindow::showPrintPreview(const QRectF &worldArea)
         output.setPageSize(selectedPaper());
         output.setPageOrientation(selectedOrientation());
         output.setCopyCount(copies->value());
-        if (!m_view->printToPrinter(&output, worldArea)) {
+        if (!m_view->printToPrinter(
+                &output, worldArea,
+                colorModeCombo->currentData().toBool())) {
             QMessageBox::warning(
                 &dialog, QStringLiteral("打印失败"),
                 toPdf ? QStringLiteral("无法创建 PDF 文件。")
@@ -2984,6 +2997,8 @@ void MainWindow::showPrintPreview(const QRectF &worldArea)
     connect(paperCombo, &QComboBox::currentIndexChanged,
             &dialog, [&] { updatePreview(); });
     connect(orientationCombo, &QComboBox::currentIndexChanged,
+            &dialog, [&] { updatePreview(); });
+    connect(colorModeCombo, &QComboBox::currentIndexChanged,
             &dialog, [&] { updatePreview(); });
     connect(ruler, &QCheckBox::toggled, previewCanvas,
             &PrintPreviewCanvas::setRulerVisible);

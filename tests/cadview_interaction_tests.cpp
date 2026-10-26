@@ -44,6 +44,23 @@ int fail(const char *message)
     return 1;
 }
 
+bool usesOnlyBlackInk(const QImage &image)
+{
+    for (int y = 0; y < image.height(); ++y) {
+        for (int x = 0; x < image.width(); ++x) {
+            const QColor color = image.pixelColor(x, y);
+            const int maximum =
+                qMax(color.red(), qMax(color.green(), color.blue()));
+            const int minimum =
+                qMin(color.red(), qMin(color.green(), color.blue()));
+            if (maximum - minimum > 1) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 int main(int argc, char *argv[])
@@ -348,6 +365,16 @@ int main(int argc, char *argv[])
         || printPreview.pixelColor(20, 20) != QColor(Qt::white)) {
         return fail("print preview page rendering failed");
     }
+    if (!usesOnlyBlackInk(printPreview)) {
+        return fail("print preview contains non-black graphics");
+    }
+    const QImage colorPrintPreview =
+        view.renderPrintAreaToImage(
+            selectedPrintArea, QSize(842, 595), false);
+    if (colorPrintPreview.isNull()
+        || usesOnlyBlackInk(colorPrintPreview)) {
+        return fail("color print preview did not preserve CAD colors");
+    }
 
     QTemporaryDir temporaryDirectory;
     if (!temporaryDirectory.isValid()) {
@@ -396,10 +423,13 @@ int main(int argc, char *argv[])
     const QString textPdfPath =
         temporaryDirectory.filePath(QStringLiteral("text-output.pdf"));
     QPrinter textPrinter(QPrinter::HighResolution);
-    textPrinter.setResolution(300);
+    textPrinter.setResolution(1200);
     textPrinter.setOutputFormat(QPrinter::PdfFormat);
     textPrinter.setOutputFileName(textPdfPath);
     textPrinter.setPageSize(QPageSize(QPageSize::A4));
+    if (textPrinter.resolution() != 1200) {
+        return fail("PDF printer did not accept high resolution");
+    }
     if (!printTextView.printToPrinter(
             &textPrinter, QRectF(0.0, 0.0, 1000.0, 800.0))) {
         return fail("text and dimension PDF print failed");
@@ -413,6 +443,32 @@ int main(int argc, char *argv[])
     }
     const QImage renderedPrintPage =
         renderedPrintPdf.pdfPages.first().image;
+    if (!usesOnlyBlackInk(renderedPrintPage)) {
+        return fail("printed PDF contains non-black graphics");
+    }
+    const QString colorTextPdfPath =
+        temporaryDirectory.filePath(QStringLiteral("text-output-color.pdf"));
+    QPrinter colorTextPrinter(QPrinter::HighResolution);
+    colorTextPrinter.setResolution(1200);
+    colorTextPrinter.setOutputFormat(QPrinter::PdfFormat);
+    colorTextPrinter.setOutputFileName(colorTextPdfPath);
+    colorTextPrinter.setPageSize(QPageSize(QPageSize::A4));
+    if (!printTextView.printToPrinter(
+            &colorTextPrinter, QRectF(0.0, 0.0, 1000.0, 800.0),
+            false)) {
+        return fail("color CAD PDF print failed");
+    }
+    CadDocument renderedColorPdf;
+    QString renderedColorError;
+    if (!renderedColorPdf.load(
+            colorTextPdfPath, &renderedColorError)
+        || renderedColorPdf.pdfPages.isEmpty()) {
+        return fail("color CAD PDF could not be rasterized");
+    }
+    if (usesOnlyBlackInk(
+            renderedColorPdf.pdfPages.first().image)) {
+        return fail("color CAD PDF did not preserve source colors");
+    }
     if (qEnvironmentVariableIsSet("CADLENS_TEST_IMAGE_DIR")) {
         const QString testDirectory =
             qEnvironmentVariable("CADLENS_TEST_IMAGE_DIR");

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.28)
 
-project(CadLens VERSION 1.0.0 LANGUAGES C CXX)
+project(CadLens VERSION 1.0.1 LANGUAGES C CXX)
 
 if(APPLE)
     enable_language(OBJCXX)

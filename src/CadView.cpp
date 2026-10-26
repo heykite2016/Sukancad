@@ -275,17 +275,6 @@ QColor annotationColor(const Measurement &measurement)
                                        : QColor(QStringLiteral("#37d67a"));
 }
 
-QColor colorForPrint(const QColor &source)
-{
-    if (!source.isValid()) {
-        return QColor(Qt::black);
-    }
-    if (source.lightnessF() > 0.82) {
-        return QColor(Qt::black);
-    }
-    return source.darker(125);
-}
-
 double distanceToSegment(const QLineF &line, const QPointF &point)
 {
     const QPointF delta = line.p2() - line.p1();
@@ -375,6 +364,25 @@ QColor CadView::canvasBackgroundColor() const
     return m_drawingTheme == DrawingTheme::CadLight
         ? QColor(QStringLiteral("#f7f7f4"))
         : QColor(QStringLiteral("#000000"));
+}
+
+QColor CadView::printColor(const QColor &source) const
+{
+    if (m_printBlackInk) {
+        return QColor(Qt::black);
+    }
+    return source.isValid() ? source : QColor(Qt::black);
+}
+
+QColor CadView::printColor(const CadEntity &entity) const
+{
+    if (m_printBlackInk) {
+        return QColor(Qt::black);
+    }
+    if (entity.sourceColor.isValid()) {
+        return entity.sourceColor;
+    }
+    return entity.color.isValid() ? entity.color : QColor(Qt::black);
 }
 
 QColor CadView::displayColor(const QColor &source) const
@@ -1383,7 +1391,8 @@ QImage CadView::renderWorldRectToImage(const QRectF &area,
 }
 
 QImage CadView::renderPrintAreaToImage(const QRectF &area,
-                                       const QSize &size)
+                                       const QSize &size,
+                                       bool blackInk)
 {
     QImage image(size, QImage::Format_ARGB32_Premultiplied);
     image.fill(Qt::white);
@@ -1395,6 +1404,7 @@ QImage CadView::renderPrintAreaToImage(const QRectF &area,
     const QPointF previousCenter = m_center;
     const double previousScale = m_scale;
     const bool previousPrintStyle = m_printStyle;
+    const bool previousBlackInk = m_printBlackInk;
     const double margin =
         qMin(size.width(), size.height()) * 0.035;
     const double availableWidth =
@@ -1406,6 +1416,7 @@ QImage CadView::renderPrintAreaToImage(const QRectF &area,
     m_scale = qMin(availableWidth / area.width(),
                    availableHeight / area.height());
     m_printStyle = true;
+    m_printBlackInk = blackInk;
     {
         QPainter painter(&image);
         renderScene(painter, size, true);
@@ -1414,6 +1425,7 @@ QImage CadView::renderPrintAreaToImage(const QRectF &area,
     m_center = previousCenter;
     m_scale = previousScale;
     m_printStyle = previousPrintStyle;
+    m_printBlackInk = previousBlackInk;
     return image;
 }
 
@@ -1462,9 +1474,20 @@ void CadView::drawPdfPage(QPainter &painter)
     if (!m_document || !m_document->isPdf()) {
         return;
     }
-    const CadPdfPage *page = m_document->pdfPage(m_activeSpace);
+    CadPdfPage *page = m_document->pdfPage(m_activeSpace);
     if (!page || page->image.isNull()) {
         return;
+    }
+    const QImage *sourceImage = &page->image;
+    if (m_printStyle && m_printBlackInk) {
+        if (page->printImage.size() != page->image.size()) {
+            page->printImage = page->image.convertToFormat(
+                QImage::Format_Mono, Qt::ThresholdDither);
+            page->printImage =
+                page->printImage.convertToFormat(
+                    QImage::Format_ARGB32_Premultiplied);
+        }
+        sourceImage = &page->printImage;
     }
     const QPointF topLeft = worldToScreen(
         QPointF(page->pageRect.left(), page->pageRect.top()));
@@ -1476,7 +1499,7 @@ void CadView::drawPdfPage(QPainter &painter)
     }
     painter.save();
     painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
-    painter.drawImage(target, page->image);
+    painter.drawImage(target, *sourceImage);
     painter.restore();
 }
 
@@ -1626,7 +1649,7 @@ void CadView::drawCadEntities(QPainter &painter, const QSize &viewport)
         const double lineWidth =
             lineWidthPixels(entity.lineWeight, m_lineWeightsVisible);
         const QColor strokeColor =
-            m_printStyle ? colorForPrint(entity.color)
+            m_printStyle ? printColor(entity)
                          : displayColor(entity.color);
         LineBatchKey key;
         key.color = strokeColor.rgba();
@@ -1713,7 +1736,7 @@ void CadView::drawCadEntities(QPainter &painter, const QSize &viewport)
                                    Qt::IntersectClip);
             }
             const QColor hatchColor =
-                m_printStyle ? colorForPrint(color) : displayColor(color);
+                m_printStyle ? printColor(color) : displayColor(color);
             if (pattern->solid && fillShape) {
                 target.fillPath(path, hatchColor);
                 ++renderedHatchPatterns;
@@ -1753,9 +1776,12 @@ void CadView::drawCadEntities(QPainter &painter, const QSize &viewport)
                 target.drawLines(lines);
                 renderedHatchPatterns += lines.size();
             } else if (pattern->gradient) {
-                target.fillPath(
-                    path, QColor(hatchColor.red(), hatchColor.green(),
-                                 hatchColor.blue(), 55));
+                const QColor gradientColor =
+                    m_printStyle
+                    ? QColor(Qt::black)
+                    : QColor(hatchColor.red(), hatchColor.green(),
+                             hatchColor.blue(), 55);
+                target.fillPath(path, gradientColor);
                 ++renderedHatchPatterns;
             }
             target.restore();
@@ -1812,11 +1838,11 @@ void CadView::drawCadEntities(QPainter &painter, const QSize &viewport)
             screenPoints.append(worldToScreen(point));
         }
         QColor fill =
-            m_printStyle ? colorForPrint(entity.color)
+            m_printStyle ? printColor(entity)
                          : displayColor(entity.color);
-        fill.setAlpha(90);
+        fill.setAlpha(m_printStyle ? 255 : 90);
         const QColor stroke =
-            m_printStyle ? colorForPrint(entity.color)
+            m_printStyle ? printColor(entity)
                          : displayColor(entity.color);
         painter.save();
         if (entity.clipRect.isValid()) {
@@ -1965,7 +1991,7 @@ void CadView::drawCadText(QPainter &painter, const CadEntity &entity)
     }
     path.translate(shiftX, shiftY);
     painter.setPen(Qt::NoPen);
-    painter.setBrush(m_printStyle ? colorForPrint(entity.color)
+    painter.setBrush(m_printStyle ? printColor(entity)
                                   : displayColor(entity.color));
     painter.drawPath(path);
     painter.restore();
@@ -2149,7 +2175,7 @@ void CadView::drawVectorLabel(QPainter &painter, const QString &text,
     const QRectF screenBounds =
         textPath.boundingRect().translated(anchor);
     painter.save();
-    const QColor ink = m_printStyle ? colorForPrint(color) : color;
+    const QColor ink = m_printStyle ? printColor(color) : color;
     painter.translate(anchor);
     painter.setPen(Qt::NoPen);
     painter.setBrush(ink);
@@ -2202,7 +2228,7 @@ void CadView::drawDimensionText(QPainter &painter, const QString &text,
     painter.translate(anchor);
     painter.rotate(angleDegrees);
     painter.setPen(Qt::NoPen);
-    const QColor ink = m_printStyle ? colorForPrint(color) : color;
+    const QColor ink = m_printStyle ? printColor(color) : color;
     painter.setBrush(ink);
     painter.drawPath(textPath);
     if (hitRect) {
@@ -2238,7 +2264,7 @@ void CadView::drawMeasurement(QPainter &painter,
     }
     QColor color = annotationColor(measurement);
     if (m_printStyle) {
-        color = colorForPrint(color);
+        color = printColor(color);
     }
     if (selected) {
         color = color.lighter(125);
@@ -4241,7 +4267,8 @@ bool CadView::exportSvg(const QString &path, QString *errorMessage)
     return true;
 }
 
-bool CadView::printToPrinter(QPrinter *printer, const QRectF &worldArea)
+bool CadView::printToPrinter(QPrinter *printer, const QRectF &worldArea,
+                             bool blackInk)
 {
     if (!printer || !m_document || !worldArea.isValid()
         || worldArea.width() <= 0.0 || worldArea.height() <= 0.0) {
@@ -4262,6 +4289,35 @@ bool CadView::printToPrinter(QPrinter *printer, const QRectF &worldArea)
     if (dpiY <= 0.0) {
         dpiY = printer->resolution();
     }
+    CadPdfPage *printPdfPage = nullptr;
+    QImage originalPdfImage;
+    if (m_document->isPdf()) {
+        for (int index = 0; index < m_document->pdfPages.size();
+             ++index) {
+            CadPdfPage &page = m_document->pdfPages[index];
+            if (page.name == m_activeSpace) {
+                printPdfPage = &page;
+                const int requestedPixels = qMin(
+                    8192,
+                    qMax(3200, int(qMax(devicePage.width(),
+                                        devicePage.height()))));
+                const int currentPixels = qMax(
+                    page.image.width(), page.image.height());
+                if (requestedPixels > currentPixels) {
+                    QImage highResolutionImage;
+                    if (renderPdfPage(
+                            m_document->path, index,
+                            requestedPixels, &highResolutionImage,
+                            nullptr)) {
+                        originalPdfImage = page.image;
+                        page.image = std::move(highResolutionImage);
+                        page.printImage = QImage();
+                    }
+                }
+                break;
+            }
+        }
+    }
     const double outputScaleX = qMax(1.0, dpiX / 96.0);
     const double outputScaleY = qMax(1.0, dpiY / 96.0);
     const QRectF page(
@@ -4277,12 +4333,14 @@ bool CadView::printToPrinter(QPrinter *printer, const QRectF &worldArea)
     const QPointF oldCenter = m_center;
     const double oldScale = m_scale;
     const bool oldPrintStyle = m_printStyle;
+    const bool oldPrintBlackInk = m_printBlackInk;
 
     m_renderSize = page.size();
     m_center = worldArea.center();
     m_scale = qMin(availableWidth / worldArea.width(),
                    availableHeight / worldArea.height());
     m_printStyle = true;
+    m_printBlackInk = blackInk;
     painter.save();
     painter.scale(outputScaleX, outputScaleY);
     painter.setClipRect(page);
@@ -4293,6 +4351,11 @@ bool CadView::printToPrinter(QPrinter *printer, const QRectF &worldArea)
     m_center = oldCenter;
     m_scale = oldScale;
     m_printStyle = oldPrintStyle;
+    m_printBlackInk = oldPrintBlackInk;
+    if (printPdfPage && !originalPdfImage.isNull()) {
+        printPdfPage->image = std::move(originalPdfImage);
+        printPdfPage->printImage = QImage();
+    }
     painter.end();
     return true;
 }

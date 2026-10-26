@@ -40,7 +40,7 @@ QImage renderPage(PDFPage *page, PDFDocument *document, int pageIndex,
         return {};
     }
     const double scale = qMin(
-        3.0,
+        16.0,
         qMax(1.0, double(maximumPixelSize)
                        / qMax(1, qMax(pageSize.width(),
                                       pageSize.height()))));
@@ -102,6 +102,7 @@ bool loadPdfDocument(const QString &filePath, CadDocument &document,
         CadLayer pdfLayer;
         pdfLayer.name = QStringLiteral("PDF 页面");
         pdfLayer.color = QColor(Qt::white);
+        pdfLayer.sourceColor = pdfLayer.color;
         document.layers.append(pdfLayer);
 
         for (NSInteger index = 0; index < pdf.pageCount; ++index) {

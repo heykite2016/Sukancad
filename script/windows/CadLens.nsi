@@ -23,12 +23,12 @@ RequestExecutionLevel admin
 SetCompressor /SOLID lzma
 SetCompressorDictSize 32
 
-VIProductVersion "1.0.0.0"
+VIProductVersion "1.0.1.0"
 VIAddVersionKey "ProductName" "CAD Lens"
-VIAddVersionKey "ProductVersion" "1.0.0"
+VIAddVersionKey "ProductVersion" "1.0.1"
 VIAddVersionKey "CompanyName" "CAD Lens"
 VIAddVersionKey "FileDescription" "CAD Lens Engineering Drawing Viewer"
-VIAddVersionKey "FileVersion" "1.0.0.0"
+VIAddVersionKey "FileVersion" "1.0.1.0"
 VIAddVersionKey "LegalCopyright" "Copyright CAD Lens"
 
 !define MUI_ABORTWARNING
@@ -66,7 +66,7 @@ Section "CAD Lens" SecMain
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CADLens" \
     "DisplayName" "CAD Lens"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CADLens" \
-    "DisplayVersion" "1.0.0"
+    "DisplayVersion" "1.0.1"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CADLens" \
     "Publisher" "CAD Lens"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CADLens" \

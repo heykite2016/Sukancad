@@ -261,6 +261,7 @@ private:
             layer.color = source.color24 >= 0
                 ? QColor::fromRgb(source.color24)
                 : aciColor(aci);
+            layer.sourceColor = layer.color;
             layer.color = displayColorForDarkCanvas(layer.color);
             layer.visible = source.color >= 0 && (source.flags & 1) == 0;
             layer.locked = (source.flags & 4) != 0;
@@ -294,6 +295,7 @@ private:
         CadLayer layer;
         layer.name = normalized;
         layer.color = aciColor((m_document.layers.size() % 8) + 1);
+        layer.sourceColor = layer.color;
         m_document.layers.append(layer);
         const int index = m_document.layers.size() - 1;
         m_layerLookup.insert(normalized, index);
@@ -347,11 +349,13 @@ private:
         output.layer = QString::fromStdString(source->layer);
         const int layerIndex = ensureLayer(output.layer);
         const CadLayer &cadLayer = m_document.layers[layerIndex];
-        output.color = source->color24 >= 0
+        output.sourceColor = source->color24 >= 0
             ? QColor::fromRgb(source->color24)
             : (source->color == DRW::ColorByLayer
-                   ? cadLayer.color
+                   ? (cadLayer.sourceColor.isValid()
+                          ? cadLayer.sourceColor : cadLayer.color)
                    : aciColor(source->color));
+        output.color = output.sourceColor;
         output.color = displayColorForDarkCanvas(output.color);
         output.lineWeight = source->lWeight == DRW_LW_Conv::widthByLayer
             ? cadLayer.lineWeight
@@ -1097,7 +1101,7 @@ const QVector<QLineF> &CadEntity::segments() const
 namespace {
 
 constexpr quint32 kParsedCacheMagic = 0x4341444cU;
-constexpr quint32 kParsedCacheVersion = 3;
+constexpr quint32 kParsedCacheVersion = 4;
 
 QDataStream &operator<<(QDataStream &stream,
                         const CadDimensionEdge &edge);
@@ -1276,14 +1280,16 @@ QDataStream &operator>>(QDataStream &stream, CadHatchPattern &pattern)
 
 QDataStream &operator<<(QDataStream &stream, const CadLayer &layer)
 {
-    return stream << layer.name << layer.color << layer.visible
+    return stream << layer.name << layer.color << layer.sourceColor
+                  << layer.visible
                   << layer.locked << layer.lineWeight
                   << layer.entityCount;
 }
 
 QDataStream &operator>>(QDataStream &stream, CadLayer &layer)
 {
-    return stream >> layer.name >> layer.color >> layer.visible
+    return stream >> layer.name >> layer.color >> layer.sourceColor
+                  >> layer.visible
                   >> layer.locked >> layer.lineWeight
                   >> layer.entityCount;
 }
@@ -1291,7 +1297,8 @@ QDataStream &operator>>(QDataStream &stream, CadLayer &layer)
 QDataStream &operator<<(QDataStream &stream, const CadEntity &entity)
 {
     stream << qint32(entity.type) << quint64(entity.sourceHandle)
-           << entity.layer << entity.color << entity.lineWeight
+           << entity.layer << entity.color << entity.sourceColor
+           << entity.lineWeight
            << entity.closed << entity.filled
            << entity.center << entity.radius << entity.startAngle
            << entity.endAngle << entity.text << entity.textPosition
@@ -1315,7 +1322,7 @@ QDataStream &operator>>(QDataStream &stream, CadEntity &entity)
     quint64 handle = 0;
     bool hasPattern = false;
     stream >> type >> handle >> entity.layer >> entity.color
-        >> entity.lineWeight >> entity.closed
+        >> entity.sourceColor >> entity.lineWeight >> entity.closed
         >> entity.filled >> entity.center >> entity.radius
         >> entity.startAngle >> entity.endAngle >> entity.text
         >> entity.textPosition >> entity.textAlignmentPoint

@@ -118,14 +118,16 @@ public:
     bool exportSvg(const QString &path, QString *errorMessage);
     QImage renderToImage(const QSize &size);
     QImage renderWorldRectToImage(const QRectF &area, const QSize &size);
-    QImage renderPrintAreaToImage(const QRectF &area, const QSize &size);
+    QImage renderPrintAreaToImage(const QRectF &area, const QSize &size,
+                                  bool blackInk = true);
     static QVector<CadEntity>
     composeLayoutContent(const CadDocument &document,
                          const QVector<CadEntity> &modelEntities,
                          const QString &name);
     static QHash<QString, QVector<CadEntity>>
     prepareAllLayoutContents(const CadDocument &document);
-    bool printToPrinter(QPrinter *printer, const QRectF &worldArea);
+    bool printToPrinter(QPrinter *printer, const QRectF &worldArea,
+                        bool blackInk = true);
     void invalidateDrawingCache();
     void showAllMeasurements();
     void hideAllMeasurements();
@@ -203,6 +205,8 @@ private:
                            bool emphasized = false);
     void drawArrow(QPainter &painter, const QPointF &tip,
                    const QPointF &toward, const QColor &color);
+    QColor printColor(const QColor &source) const;
+    QColor printColor(const CadEntity &entity) const;
     void drawSnapMarker(QPainter &painter, const QPointF &screenPoint,
                         SnapKind kind);
     void drawDeleteHoverMarker(QPainter &painter);
@@ -276,6 +280,7 @@ private:
     double m_toolAuxiliaryValue = 0.0;
     bool m_lineWeightsVisible = true;
     bool m_printStyle = false;
+    bool m_printBlackInk = true;
     QSizeF m_renderSize;
     double m_pendingCalibrationRawLength = 0.0;
     QVector<QPointF> m_calibrationPoints;

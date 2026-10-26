@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP="${CADLENS_MAC_APP:-$ROOT_DIR/dist/CadLens.app}"
-VERSION="1.0.0"
+VERSION="1.0.1"
 
 if [[ ! -d "$APP" ]]; then
     echo "Missing $APP. Build the macOS app first." >&2
