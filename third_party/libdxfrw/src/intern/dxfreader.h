@@ -1,0 +1,227 @@
+/******************************************************************************
+**  libDXFrw - Library to read/write DXF files (ascii & binary)              **
+**                                                                           **
+**  Copyright (C) 2011-2015 José F. Soriano, rallazz@gmail.com               **
+**                                                                           **
+**  This library is free software, licensed under the terms of the GNU       **
+**  General Public License as published by the Free Software Foundation,     **
+**  either version 2 of the License, or (at your option) any later version.  **
+**  You should have received a copy of the GNU General Public License        **
+**  along with this program.  If not, see <http://www.gnu.org/licenses/>.    **
+******************************************************************************/
+
+#ifndef DXFREADER_H
+#define DXFREADER_H
+
+#include <cstddef>
+#include <cstdint>
+#include <unordered_set>
+
+#include "dxfcode.h"
+#include "dxfparserlimits.h"
+#include "drw_textcodec.h"
+
+class dxfReader {
+public:
+    enum TYPE {
+        STRING,
+        INT32,
+        INT64,
+        DOUBLE,
+        BOOL,
+        BINARY,
+        INVALID
+    };
+    enum TYPE type;
+public:
+    dxfReader(std::istream *stream){
+        filestr = stream;
+        type = INVALID;
+    }
+    virtual ~dxfReader() = default;
+    bool readRec(int *code);
+
+    /// Bound the aggregate number of physical records consumed by this
+    /// reader. The budget is reset by constructing a reader for each public
+    /// operation; zero rejects the first record. This is a resource ceiling,
+    /// not a DXF semantic limit.
+    void setRecordBudget(std::size_t budget) noexcept {
+        m_recordBudget = budget;
+    }
+    std::size_t recordCount() const noexcept { return m_recordCount; }
+    bool recordBudgetExceeded() const noexcept {
+        return m_recordBudgetExceeded;
+    }
+
+    // EED/XDATA text values (1000-1003) use the drawing's active source
+    // code-page just like ordinary text strings. Keep code 1004 binary chunks
+    // and code 1005 handles in their canonical raw spelling. The current
+    // group code is latched by readRec(), so every typed parseCode path gets
+    // the same conversion without duplicating it in each entity/table.
+    std::string getString() {
+        // Group 430 is the common-entity color-book name. It is a semantic
+        // model string, unlike the raw handles/application markers handled by
+        // the other getString() callers. Decode it only while a typed entity
+        // parser has enabled semantic mode; raw DXF carriers must retain the
+        // source spelling for lossless replay.
+        if ((m_decodeSemanticStrings && m_currentCode == 430)
+            || (m_currentCode >= 1000 && m_currentCode <= 1003))
+            return decoder.toUtf8(strData);
+        return strData;
+    }
+    const std::string& getRawValue() const { return rawData; }
+    // Convert a validated hexadecimal handle string representable by the
+    // legacy 32-bit object model. Typed records must use this form.
+    std::uint32_t getHandleString();
+    bool isValidHandleString() const;
+    // Raw DXF carriers may retain a syntactically valid DWG-width handle
+    // lexeme (one to sixteen hexadecimal digits) without narrowing it.
+    bool isValidHandleLexeme() const;
+    // Admit one code-5 self handle for this read session. References use
+    // other group codes and are intentionally not registered here.
+    bool registerSelfHandle();
+    // When readRec() rejects an otherwise decoded handle/reference lexeme,
+    // expose the group code so a façade can retain the legacy stage result
+    // while adding structured context to its operation diagnostic.
+    int lastInvalidHandleCode() const { return m_lastInvalidHandleCode; }
+    void setAllowWideHandleLexemes(bool allow) {
+        m_allowWideHandleLexemes = allow;
+    }
+    bool allowsWideHandleLexemes() const {
+        return m_allowWideHandleLexemes;
+    }
+    // Some legacy DIMSTYLE records use 340 for a text-style name and leave
+    // subsequent handle slots empty; accept that scoped spelling.
+    void setAllowDimstyleNames(bool allow) { m_allowDimstyleNames = allow; }
+    std::string toUtf8String(std::string t) {return decoder.toUtf8(t);}
+    std::string getUtf8String() {return decoder.toUtf8(strData);}
+    double getDouble() {return doubleData;}
+    int getInt32() {return intData;}
+    std::int64_t getInt64() {return int64;}
+    bool getBool() { return (intData==0) ? false : true;}
+    int getVersion(){return decoder.getVersion();}
+    void setVersion(const std::string &v, bool dxfFormat){decoder.setVersion(v, dxfFormat);}
+    void setCodePage(const std::string &c){decoder.setCodePage(c, true);}
+    std::string getCodePage(){ return decoder.getCodePage();}
+    DRW::Version getSourceVersion() const { return decoder.getSourceVersion(); }
+    bool hasSourceVersion() const { return decoder.hasSourceVersion(); }
+    void setSemanticStringMode(bool enabled) noexcept {
+        m_decodeSemanticStrings = enabled;
+    }
+    void setIgnoreComments(const bool bValue) {m_bIgnoreComments = bValue;}
+    /// Select an explicit classifier profile for compatibility probes. The
+    /// standalone-safe profile is the default; production callers must not
+    /// silently opt into the pinned LibreCAD legacy widths.
+    void setClassifierProfile(DxfClassifierProfile profile) {
+        m_classifierProfile = profile;
+    }
+    DxfClassifierProfile classifierProfile() const {
+        return m_classifierProfile;
+    }
+
+protected:
+    virtual bool readCode(int *code) = 0; //return true if successful (not EOF)
+    virtual bool readString(std::string *text) = 0;
+    virtual bool readString() = 0;
+    virtual bool readBinary() = 0;
+    virtual bool readInt16() = 0;
+    virtual bool readInt32() = 0;
+    virtual bool readInt64() = 0;
+    virtual bool readDouble() = 0;
+    virtual bool readBool() = 0;
+
+protected:
+    std::istream *filestr;
+    std::string strData;
+    // Source value spelling for ASCII records; binary readers leave this as
+    // the decoded representation and callers must use typed values instead.
+    std::string rawData;
+    double doubleData = 0.0;
+    signed int intData = 0; //32 bits integer
+    std::int64_t int64 = 0; // signed 64-bit integer (DXF codes 160-169)
+    bool skip = false; //set to true for ascii dxf, false for binary
+private:
+    DRW_TextCodec decoder;
+    bool m_bIgnoreComments {false};
+    DxfClassifierProfile m_classifierProfile {
+        DxfClassifierProfile::StandaloneSafe};
+    bool m_allowWideHandleLexemes {false};
+    bool m_allowDimstyleNames {false};
+    bool m_decodeSemanticStrings {false};
+    std::unordered_set<std::uint64_t> m_selfHandles;
+    std::uint64_t m_currentSelfHandle {0};
+    bool m_currentSelfHandleRegistered {false};
+    int m_lastInvalidHandleCode {0};
+    std::size_t m_recordBudget {DRW::kDefaultDxfReadRecordBudget};
+    std::size_t m_recordCount {0};
+    bool m_recordBudgetExceeded {false};
+    int m_currentCode {0};
+};
+
+class dxfReaderBinary : public dxfReader {
+public:
+    dxfReaderBinary(std::istream *stream):dxfReader(stream){skip = false; }
+    virtual ~dxfReaderBinary() = default;
+    virtual bool readCode(int *code);
+    virtual bool readString(std::string *text);
+    virtual bool readString();
+    virtual bool readBinary();
+    virtual bool readInt16();
+    virtual bool readInt32();
+    virtual bool readInt64();
+    virtual bool readDouble();
+    virtual bool readBool();
+};
+
+// Pre-R13 (R12/AC1009) binary DXF uses 1-byte group codes instead of the
+// 2-byte little-endian codes of R13+. Only readCode differs; every value
+// reader (string/double/int/...) is identical, so inherit them all.
+class dxfReaderBinaryR12 : public dxfReaderBinary {
+public:
+    dxfReaderBinaryR12(std::istream *stream):dxfReaderBinary(stream){}
+    virtual ~dxfReaderBinaryR12() = default;
+    virtual bool readCode(int *code) override;
+};
+
+class dxfReaderAscii : public dxfReader {
+public:
+    dxfReaderAscii(std::istream *stream):dxfReader(stream){skip = true; }
+    virtual ~dxfReaderAscii() = default;
+    virtual bool readCode(int *code);
+    virtual bool readString(std::string *text);
+    virtual bool readString();
+    virtual bool readBinary();
+    virtual bool readInt16();
+    virtual bool readDouble();
+    virtual bool readInt32();
+    virtual bool readInt64();
+    virtual bool readBool();
+};
+
+
+/// Read one group code of a coordinate triplet - an origin plus an X and a Y
+/// axis - into the three coordinates that carry it.  DXF spells this the same
+/// way wherever a record stores such a frame: VPORT, VIEW and VIEWPORT use it
+/// for their UCS, and MLEADER's context data for its content base point and
+/// base direction/vertical.  The nine cases live here once instead of being
+/// repeated per record.
+///
+/// Returns true when the code belonged to the triplet and was consumed.
+inline bool readCoordTripletCode(int code, const std::unique_ptr<dxfReader>& reader,
+                                 DRW_Coord& origin, DRW_Coord& xAxis,
+                                 DRW_Coord& yAxis) {
+    switch (code) {
+    case 110: origin.x = reader->getDouble(); return true;
+    case 120: origin.y = reader->getDouble(); return true;
+    case 130: origin.z = reader->getDouble(); return true;
+    case 111: xAxis.x = reader->getDouble(); return true;
+    case 121: xAxis.y = reader->getDouble(); return true;
+    case 131: xAxis.z = reader->getDouble(); return true;
+    case 112: yAxis.x = reader->getDouble(); return true;
+    case 122: yAxis.y = reader->getDouble(); return true;
+    case 132: yAxis.z = reader->getDouble(); return true;
+    default: return false;
+    }
+}
+
+#endif // DXFREADER_H

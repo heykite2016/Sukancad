@@ -1,0 +1,33 @@
+{
+  "schema": "libdxfrw-external-advisory-report-v1",
+  "evidenceId": "external-advisory-s07-2026-09-18",
+  "sourceCommit": "0ee16072562e9b655b8963207731bef9a6f1b48c",
+  "run": {
+    "command": "ctest -L dwg_read --output-on-failure",
+    "buildTarget": "tests-on CMake build",
+    "timestamp": "2026-09-18",
+    "fixtureAdmission": "externalWorkingTree",
+    "ordinaryCiEligible": false,
+    "promotesSupportClaims": false
+  },
+  "matrix": {
+    "AC1021": {"inputs": 7, "cases": 21, "passed": 15, "failed": 6},
+    "AC1024": {"inputs": 10, "cases": 30, "passed": 18, "failed": 12},
+    "total": {"inputs": 17, "cases": 51, "passed": 33, "failed": 18}
+  },
+  "failurePattern": {
+    "R12": {"cases": 17, "failed": 16},
+    "v2000": {"cases": 17, "failed": 2},
+    "v2010": {"cases": 17, "failed": 0}
+  },
+  "interpretation": "The external corpus is useful for triage only. Conversion failures are retained as observed advisory outcomes; no external byte is admitted, copied, or used to promote a format-support claim.",
+  "deferredExternal": [
+    {"id": "J256", "status": "DEFERRED_EXTERNAL", "promotesSupportClaims": false},
+    {"id": "J260", "status": "DEFERRED_EXTERNAL", "promotesSupportClaims": false},
+    {"id": "J268", "status": "DEFERRED_EXTERNAL", "promotesSupportClaims": false},
+    {"id": "J284", "status": "DEFERRED_EXTERNAL", "promotesSupportClaims": false},
+    {"id": "J293", "status": "DEFERRED_EXTERNAL", "promotesSupportClaims": false},
+    {"id": "J295", "status": "DEFERRED_EXTERNAL", "promotesSupportClaims": false}
+  ],
+  "unblockCondition": "Independent platform execution and semantic support evidence with eligible fixtures or local-from-scratch vectors; an external run alone cannot change DEFERRED_EXTERNAL."
+}

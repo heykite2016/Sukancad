@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="48" viewBox="0 0 120 48">
+  <g fill="none" stroke="#69dfa0" stroke-width="1.1" stroke-linecap="square">
+    <path d="M18 16v22M102 16v22M18 31h84"/>
+    <path d="M15 34l6-6M99 34l6-6"/>
+  </g>
+  <text x="60" y="25" fill="#c9f4da" font-family="sans-serif" font-size="8" text-anchor="middle">12.5</text>
+</svg>

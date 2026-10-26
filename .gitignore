@@ -1,0 +1,7 @@
+.DS_Store
+.qt/
+build/
+build-*/
+dist/
+*.log
+*.user
