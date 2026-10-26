@@ -222,12 +222,12 @@ QString measurementTypeLabel(MeasurementType type)
 QStringList annotationStyleLabels()
 {
     return {
-        QStringLiteral("标准"),
-        QStringLiteral("建筑"),
+        QStringLiteral("ISO 标准"),
+        QStringLiteral("建筑斜线"),
         QStringLiteral("机械 ISO-25"),
-        QStringLiteral("工程"),
-        QStringLiteral("小数"),
-        QStringLiteral("紧凑")
+        QStringLiteral("工程开口箭头"),
+        QStringLiteral("小数圆点"),
+        QStringLiteral("紧凑端线")
     };
 }
 
@@ -279,38 +279,58 @@ AnnotationStyleMetrics annotationStyleMetrics(AnnotationStyle style)
     AnnotationStyleMetrics metrics;
     switch (style) {
     case AnnotationStyle::Standard:
+        metrics.textSize = 13.0;
+        metrics.arrowSize = 8.4;
+        metrics.lineWidth = 1.35;
+        metrics.extensionOffset = 4.0;
+        metrics.extensionOverrun = 11.0;
+        metrics.textGap = 11.0;
+        metrics.marker = AnnotationMarker::FilledArrow;
         break;
     case AnnotationStyle::Architectural:
-        metrics.textSize = 12.5;
-        metrics.arrowSize = 9.0;
-        metrics.lineWidth = 1.25;
+        metrics.textSize = 13.0;
+        metrics.arrowSize = 7.0;
+        metrics.lineWidth = 1.15;
+        metrics.extensionOffset = 4.8;
         metrics.extensionOverrun = 12.5;
+        metrics.textGap = 12.0;
+        metrics.marker = AnnotationMarker::ArchitecturalTick;
         break;
     case AnnotationStyle::Mechanical:
-        metrics.textSize = 11.0;
-        metrics.arrowSize = 8.0;
-        metrics.lineWidth = 1.15;
-        metrics.extensionOffset = 3.5;
-        metrics.extensionOverrun = 11.0;
+        metrics.textSize = 13.0;
+        metrics.arrowSize = 6.8;
+        metrics.lineWidth = 1.1;
+        metrics.extensionOffset = 3.0;
+        metrics.extensionOverrun = 9.5;
+        metrics.textGap = 9.0;
+        metrics.marker = AnnotationMarker::NarrowFilledArrow;
         break;
     case AnnotationStyle::Engineering:
-        metrics.textSize = 11.5;
+        metrics.textSize = 13.0;
         metrics.arrowSize = 10.0;
-        metrics.extensionOverrun = 11.5;
-        metrics.openArrow = true;
+        metrics.lineWidth = 1.3;
+        metrics.extensionOffset = 4.5;
+        metrics.extensionOverrun = 13.0;
+        metrics.textGap = 12.0;
+        metrics.marker = AnnotationMarker::OpenArrow;
         break;
     case AnnotationStyle::Decimal:
-        metrics.textSize = 12.0;
-        metrics.arrowSize = 8.5;
-        metrics.lineWidth = 1.25;
-        metrics.extensionOverrun = 12.0;
+        metrics.textSize = 13.0;
+        metrics.arrowSize = 6.0;
+        metrics.lineWidth = 1.2;
+        metrics.extensionOffset = 3.8;
+        metrics.extensionOverrun = 10.5;
+        metrics.textGap = 10.0;
+        metrics.marker = AnnotationMarker::Dot;
         break;
     case AnnotationStyle::Compact:
-        metrics.textSize = 10.0;
-        metrics.arrowSize = 7.0;
-        metrics.lineWidth = 1.0;
-        metrics.extensionOffset = 3.0;
-        metrics.extensionOverrun = 10.0;
+        metrics.textSize = 11.5;
+        metrics.arrowSize = 5.8;
+        metrics.lineWidth = 0.95;
+        metrics.extensionOffset = 2.5;
+        metrics.extensionOverrun = 8.0;
+        metrics.textGap = 7.5;
+        metrics.marker = AnnotationMarker::EndBar;
         break;
     }
     return metrics;

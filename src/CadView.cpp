@@ -3,6 +3,7 @@
 #include "PdfDocument.h"
 #include <QApplication>
 #include <QElapsedTimer>
+#include <QEnterEvent>
 #include <QFont>
 #include <QFontDatabase>
 #include <QKeyEvent>
@@ -366,7 +367,7 @@ CadView::CadView(QWidget *parent) : QOpenGLWidget(parent)
     setFormat(format);
     setFocusPolicy(Qt::StrongFocus);
     setMouseTracking(true);
-    setCursor(Qt::OpenHandCursor);
+    setCursor(Qt::BlankCursor);
 }
 
 QColor CadView::canvasBackgroundColor() const
@@ -440,6 +441,7 @@ void CadView::setDocument(
     invalidatePanCache();
     m_document = std::move(document);
     m_cadTextPathCache.clear();
+    m_dimensionTextHeights.clear();
     m_measurements.clear();
     m_layoutCache = std::move(preparedLayouts);
     m_spaceViews.clear();
@@ -713,8 +715,7 @@ void CadView::beginTool(ToolMode mode, double auxiliaryValue)
     clearDraft();
     emit toolChanged(mode);
     emit statusMessage(toolPrompt());
-    setCursor(mode == ToolMode::Select ? Qt::OpenHandCursor
-                                       : Qt::CrossCursor);
+    setCursor(Qt::BlankCursor);
     setFocus();
     update();
 }
@@ -881,8 +882,16 @@ void CadView::setDisplaySettings(const DisplaySettings &settings)
             measurement.color = m_settings.annotationColor;
         }
     }
+    invalidatePanCache();
     emit measurementsChanged();
     update();
+    schedulePanCache();
+}
+
+double CadView::annotationTextPixelSize() const
+{
+    return annotationStyleMetrics(m_settings.annotationStyle).textSize
+        * annotationGeometryScale();
 }
 
 void CadView::setPrecision(int precision)
@@ -1068,6 +1077,69 @@ QRectF CadView::visibleWorldRect() const
 double CadView::snapRadiusWorld() const
 {
     return 12.0 / qMax(1.0e-14, m_scale);
+}
+
+double CadView::dimensionReferenceTextHeightWorld() const
+{
+    if (!m_document) {
+        return 1.0;
+    }
+    const auto cached = m_dimensionTextHeights.constFind(m_activeSpace);
+    if (cached != m_dimensionTextHeights.cend()) {
+        return cached.value();
+    }
+
+    QVector<double> dimensionLayerHeights;
+    QVector<double> numericTextHeights;
+    for (const CadEntity &entity : m_document->entities) {
+        if (entity.type != CadEntityType::Text
+            || !std::isfinite(entity.textHeight)
+            || entity.textHeight <= 1.0e-9) {
+            continue;
+        }
+        bool hasDigit = false;
+        for (const QChar character : entity.text) {
+            if (character.isDigit()) {
+                hasDigit = true;
+                break;
+            }
+        }
+        if (!hasDigit) {
+            continue;
+        }
+        numericTextHeights.append(entity.textHeight);
+        const QString layer = entity.layer.toLower();
+        if (layer.contains(QStringLiteral("dim"))
+            || layer.contains(QStringLiteral("尺寸"))
+            || layer.contains(QStringLiteral("标注"))) {
+            dimensionLayerHeights.append(entity.textHeight);
+        }
+    }
+
+    const auto median = [](QVector<double> values) {
+        std::sort(values.begin(), values.end());
+        return values[values.size() / 2];
+    };
+    double result = 0.0;
+    if (!dimensionLayerHeights.isEmpty()) {
+        result = median(std::move(dimensionLayerHeights));
+    } else if (!numericTextHeights.isEmpty()) {
+        result = median(std::move(numericTextHeights));
+    } else if (m_document->bounds.isValid()) {
+        result = qMax(m_document->bounds.width(),
+                      m_document->bounds.height())
+            * 0.012;
+    }
+    if (!std::isfinite(result) || result <= 1.0e-9) {
+        result = 1.0;
+    }
+    m_dimensionTextHeights.insert(m_activeSpace, result);
+    return result;
+}
+
+double CadView::annotationGeometryScale() const
+{
+    return m_scale * dimensionReferenceTextHeightWorld() / 13.0;
 }
 
 void CadView::updateSnap(const QPointF &screenPoint)
@@ -1362,8 +1434,8 @@ void CadView::renderScene(QPainter &painter, const QSize &viewport,
         drawDeleteHoverMarker(painter);
     }
 
-    if (!exporting && m_haveCursor && m_mode != ToolMode::Select
-        && !m_panning) {
+    if (!exporting && m_haveCursor && !m_panning
+        && !m_dragLabel && !m_spaceDown) {
         painter.save();
         painter.setClipRect(QRect(QPoint(0, 0), viewport));
         QPen crosshairPen(QColor(103, 218, 238, 155), 0.65);
@@ -1971,41 +2043,69 @@ void CadView::drawArrow(QPainter &painter, const QPointF &tip,
     }
     const AnnotationStyleMetrics metrics =
         annotationStyleMetrics(m_settings.annotationStyle);
-    line.setLength(metrics.arrowSize);
+    const double markerSize = qMax(
+        0.65, metrics.arrowSize * annotationGeometryScale());
+    line.setLength(markerSize);
     const double angle = std::atan2(line.dy(), line.dx());
-    if (metrics.tickArrow) {
-        const QPointF direction = tip - toward;
-        const double length =
-            std::hypot(direction.x(), direction.y());
-        if (length <= 1.0e-9) {
-            return;
-        }
-        const QPointF unit = direction / length;
+    const QPointF direction = tip - toward;
+    const double directionLength =
+        std::hypot(direction.x(), direction.y());
+    if (directionLength <= 1.0e-9) {
+        return;
+    }
+    const QPointF unit = direction / directionLength;
+    if (metrics.marker == AnnotationMarker::ArchitecturalTick) {
         const QPointF tick =
             (unit + QPointF(-unit.y(), unit.x()))
-            * (metrics.arrowSize * 0.48);
+            * (markerSize * 0.46);
         painter.save();
         painter.setPen(
-            QPen(color, 1.15, Qt::SolidLine, Qt::RoundCap));
+            QPen(color, metrics.lineWidth, Qt::SolidLine,
+                 Qt::RoundCap));
         painter.setBrush(Qt::NoBrush);
         painter.drawLine(tip - tick, tip + tick);
         painter.restore();
         return;
     }
-    const double spread = 0.42;
+    if (metrics.marker == AnnotationMarker::Dot) {
+        painter.save();
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(color);
+        const double radius = qMax(0.8, markerSize * 0.34);
+        painter.drawEllipse(tip, radius, radius);
+        painter.restore();
+        return;
+    }
+    if (metrics.marker == AnnotationMarker::EndBar) {
+        const QPointF normal(-unit.y(), unit.x());
+        painter.save();
+        painter.setPen(
+            QPen(color, metrics.lineWidth, Qt::SolidLine,
+                 Qt::SquareCap));
+        painter.drawLine(tip - normal * (markerSize * 0.62),
+                         tip + normal * (markerSize * 0.62));
+        painter.restore();
+        return;
+    }
+    const bool open =
+        metrics.marker == AnnotationMarker::OpenArrow;
+    const double spread =
+        metrics.marker == AnnotationMarker::NarrowFilledArrow
+        ? 0.28 : 0.42;
     QPainterPath arrow;
     arrow.moveTo(tip);
     arrow.lineTo(tip - QPointF(std::cos(angle - spread),
                               std::sin(angle - spread))
-                            * metrics.arrowSize);
+                            * markerSize);
     arrow.lineTo(tip - QPointF(std::cos(angle + spread),
                               std::sin(angle + spread))
-                            * metrics.arrowSize);
+                            * markerSize);
     arrow.closeSubpath();
     painter.save();
-    if (metrics.openArrow) {
+    if (open) {
         painter.setPen(
-            QPen(color, 1.15, Qt::SolidLine, Qt::RoundCap,
+            QPen(color, metrics.lineWidth, Qt::SolidLine,
+                 Qt::RoundCap,
                  Qt::RoundJoin));
         painter.setBrush(Qt::NoBrush);
     } else {
@@ -2028,12 +2128,16 @@ void CadView::drawVectorLabel(QPainter &painter, const QString &text,
     }
     const AnnotationStyleMetrics metrics =
         annotationStyleMetrics(m_settings.annotationStyle);
-    QFont font = cadFont(emphasized ? metrics.textSize + 1.0
-                                    : metrics.textSize,
+    const double geometryScale = annotationGeometryScale();
+    const int fontPixels = qMax(
+        1, qRound(metrics.textSize * geometryScale
+                  + (emphasized ? 1.0 : 0.0)));
+    QFont font = cadFont(fontPixels,
                          emphasized ? QFont::DemiBold : QFont::Medium);
     const QStringList lines = text.split(QLatin1Char('\n'));
     const double lineHeight =
-        emphasized ? metrics.textSize + 5.0 : metrics.textSize + 4.0;
+        (metrics.textSize + 3.0) * geometryScale
+        + (emphasized ? 1.0 : 0.0);
     QPainterPath textPath;
     for (int i = 0; i < lines.size(); ++i) {
         textPath.addText(
@@ -2076,12 +2180,16 @@ void CadView::drawDimensionText(QPainter &painter, const QString &text,
     }
     const AnnotationStyleMetrics metrics =
         annotationStyleMetrics(m_settings.annotationStyle);
-    QFont font = cadFont(emphasized ? metrics.textSize + 1.0
-                                    : metrics.textSize,
+    const double geometryScale = annotationGeometryScale();
+    const int fontPixels = qMax(
+        1, qRound(metrics.textSize * geometryScale
+                  + (emphasized ? 1.0 : 0.0)));
+    QFont font = cadFont(fontPixels,
                          emphasized ? QFont::DemiBold : QFont::Medium);
     const QStringList lines = text.split(QLatin1Char('\n'));
     const double lineHeight =
-        emphasized ? metrics.textSize + 5.0 : metrics.textSize + 4.0;
+        (metrics.textSize + 3.0) * geometryScale
+        + (emphasized ? 1.0 : 0.0);
     QPainterPath textPath;
     for (int i = 0; i < lines.size(); ++i) {
         textPath.addText(
@@ -2145,6 +2253,7 @@ void CadView::drawMeasurement(QPainter &painter,
         measurement.primaryValue(*m_document, m_settings);
     const AnnotationStyleMetrics styleMetrics =
         annotationStyleMetrics(m_settings.annotationStyle);
+    const double geometryScale = annotationGeometryScale();
     QPen pen(color,
              selected ? styleMetrics.lineWidth + 0.65
                       : styleMetrics.lineWidth,
@@ -2180,8 +2289,10 @@ void CadView::drawMeasurement(QPainter &painter,
                         std::hypot(outward.x(), outward.y());
                     outward = length > 1.0e-9 ? outward / length
                                               : QPointF(0.0, -1.0);
-                    const QPointF leaderStart = midpoint + outward * 5.0;
-                    const QPointF leaderEnd = midpoint + outward * 22.0;
+                    const QPointF leaderStart =
+                        midpoint + outward * (5.0 * geometryScale);
+                    const QPointF leaderEnd =
+                        midpoint + outward * (22.0 * geometryScale);
                     painter.setPen(QPen(color, 1.0));
                     painter.drawLine(leaderStart, leaderEnd);
                     drawArrow(painter, leaderStart,
@@ -2192,7 +2303,8 @@ void CadView::drawMeasurement(QPainter &painter,
                             measurement.edgeLengths[i], *m_document,
                             m_settings.lengthUnit,
                             m_settings.lengthPrecision),
-                        midpoint + outward * 30.0, color, 0.0, nullptr,
+                        midpoint + outward * (30.0 * geometryScale),
+                        color, 0.0, nullptr,
                         false);
                 }
             } else {
@@ -2206,19 +2318,30 @@ void CadView::drawMeasurement(QPainter &painter,
                         std::hypot(outward.x(), outward.y());
                     outward = length > 1.0e-9 ? outward / length
                                               : QPointF(0.0, -1.0);
-                    const QPointF dimensionA = a + outward * 15.0;
-                    const QPointF dimensionB = b + outward * 15.0;
+                    const QPointF dimensionA =
+                        a + outward * (15.0 * geometryScale);
+                    const QPointF dimensionB =
+                        b + outward * (15.0 * geometryScale);
                     painter.setPen(QPen(color, 1.0));
                     painter.drawLine(
-                        a + outward * styleMetrics.extensionOffset,
+                        a + outward
+                            * (styleMetrics.extensionOffset
+                               * geometryScale),
                         dimensionA
-                            + outward * styleMetrics.extensionOverrun);
+                            + outward
+                                * (styleMetrics.extensionOverrun
+                                   * geometryScale));
                     painter.drawLine(
-                        b + outward * styleMetrics.extensionOffset,
+                        b + outward
+                            * (styleMetrics.extensionOffset
+                               * geometryScale),
                         dimensionB
-                            + outward * styleMetrics.extensionOverrun);
+                            + outward
+                                * (styleMetrics.extensionOverrun
+                                   * geometryScale));
                     painter.drawLine(dimensionA, dimensionB);
-                    if (QLineF(dimensionA, dimensionB).length() > 24.0) {
+                    if (QLineF(dimensionA, dimensionB).length()
+                        > 24.0 * geometryScale) {
                         drawArrow(painter, dimensionA, dimensionB, color);
                         drawArrow(painter, dimensionB, dimensionA, color);
                     }
@@ -2233,7 +2356,8 @@ void CadView::drawMeasurement(QPainter &painter,
                                 .length(),
                             *m_document, m_settings.lengthUnit,
                             m_settings.lengthPrecision),
-                        midpoint + outward * 29.0, color, angle, nullptr,
+                        midpoint + outward * (29.0 * geometryScale),
+                        color, angle, nullptr,
                         false);
                 }
             }
@@ -2248,7 +2372,8 @@ void CadView::drawMeasurement(QPainter &painter,
             painter.drawLine(points[i - 1], points[i]);
         }
         for (const QPointF &point : std::as_const(points)) {
-            painter.drawEllipse(point, 2.2, 2.2);
+            painter.drawEllipse(point, 2.2 * geometryScale,
+                                2.2 * geometryScale);
         }
 
         QPointF arrowTip = points.first();
@@ -2272,7 +2397,8 @@ void CadView::drawMeasurement(QPainter &painter,
                 arrowTip = candidate;
             }
         }
-        if (QLineF(label, arrowTip).length() > 2.0) {
+        if (QLineF(label, arrowTip).length()
+            > 2.0 * geometryScale) {
             painter.setPen(QPen(color, selected ? 1.6 : 1.2));
             painter.drawLine(label, arrowTip);
             drawArrow(painter, arrowTip, label, color);
@@ -2283,12 +2409,16 @@ void CadView::drawMeasurement(QPainter &painter,
             const QPointF rim = points[1];
             painter.drawLine(center, rim);
             drawArrow(painter, rim, center, color);
-            painter.drawLine(center + QPointF(-6.0, 0.0),
-                             center + QPointF(6.0, 0.0));
-            painter.drawLine(center + QPointF(0.0, -6.0),
-                             center + QPointF(0.0, 6.0));
-            painter.drawEllipse(center, 2.4, 2.4);
-            if (QLineF(rim, label).length() > 3.0) {
+            painter.drawLine(
+                center + QPointF(-6.0 * geometryScale, 0.0),
+                center + QPointF(6.0 * geometryScale, 0.0));
+            painter.drawLine(
+                center + QPointF(0.0, -6.0 * geometryScale),
+                center + QPointF(0.0, 6.0 * geometryScale));
+            painter.drawEllipse(center, 2.4 * geometryScale,
+                                2.4 * geometryScale);
+            if (QLineF(rim, label).length()
+                > 3.0 * geometryScale) {
                 painter.setPen(QPen(color, 0.9, Qt::DashLine));
                 painter.drawLine(rim, label);
             }
@@ -2301,17 +2431,21 @@ void CadView::drawMeasurement(QPainter &painter,
         painter.drawEllipse(center, radius, radius);
         painter.drawLine(center, rim);
         drawArrow(painter, rim, center, color);
-        painter.drawLine(center + QPointF(-8.0, 0.0),
-                         center + QPointF(8.0, 0.0));
-        painter.drawLine(center + QPointF(0.0, -8.0),
-                         center + QPointF(0.0, 8.0));
-        painter.drawEllipse(center, 2.6, 2.6);
+        painter.drawLine(
+            center + QPointF(-8.0 * geometryScale, 0.0),
+            center + QPointF(8.0 * geometryScale, 0.0));
+        painter.drawLine(
+            center + QPointF(0.0, -8.0 * geometryScale),
+            center + QPointF(0.0, 8.0 * geometryScale));
+        painter.drawEllipse(center, 2.6 * geometryScale,
+                            2.6 * geometryScale);
         QPointF radial = rim - center;
         const double radialLength =
             std::hypot(radial.x(), radial.y());
         if (radius > 0.0 && radialLength > 1.0e-9) {
             radial /= radialLength;
-            const QPointF radiusLabel = rim + radial * 13.0;
+            const QPointF radiusLabel =
+                rim + radial * (13.0 * geometryScale);
             drawDimensionText(
                 painter,
                 QStringLiteral("R%1").arg(formatDimensionValue(
@@ -2331,7 +2465,8 @@ void CadView::drawMeasurement(QPainter &painter,
             painter.drawLine(start, end);
             drawArrow(painter, end, start, color);
             drawArrow(painter, start, end, color);
-            painter.drawEllipse(points[0], 2.5, 2.5);
+            painter.drawEllipse(points[0], 2.5 * geometryScale,
+                                2.5 * geometryScale);
         }
     } else if (measurement.type == MeasurementType::Angle
                && points.size() >= 3) {
@@ -2340,7 +2475,10 @@ void CadView::drawMeasurement(QPainter &painter,
                                          points[1].x() - vertex.x());
         const double angleB = std::atan2(points[2].y() - vertex.y(),
                                          points[2].x() - vertex.x());
-        QRectF arcBox(vertex.x() - 28.0, vertex.y() - 28.0, 56.0, 56.0);
+        const double arcRadius = 28.0 * geometryScale;
+        QRectF arcBox(vertex.x() - arcRadius,
+                      vertex.y() - arcRadius,
+                      arcRadius * 2.0, arcRadius * 2.0);
         QPainterPath arc;
         arc.arcMoveTo(arcBox, -angleA * 180.0 / kPi);
         double sweep = (angleB - angleA) * 180.0 / kPi;
@@ -2427,9 +2565,14 @@ void CadView::drawMeasurement(QPainter &painter,
                 }
                 direction /= length;
                 painter.drawLine(
-                    origin + direction * styleMetrics.extensionOffset,
+                    origin
+                        + direction
+                            * (styleMetrics.extensionOffset
+                               * geometryScale),
                     dimensionPoint
-                        + direction * styleMetrics.extensionOverrun);
+                        + direction
+                            * (styleMetrics.extensionOverrun
+                               * geometryScale));
             };
             drawExtension(points[0], a);
             drawExtension(points[1], b);
@@ -2458,9 +2601,14 @@ void CadView::drawMeasurement(QPainter &painter,
             }
             direction /= length;
             painter.drawLine(
-                origin + direction * styleMetrics.extensionOffset,
+                origin
+                    + direction
+                        * (styleMetrics.extensionOffset
+                           * geometryScale),
                 dimensionPoint
-                    + direction * styleMetrics.extensionOverrun);
+                    + direction
+                        * (styleMetrics.extensionOverrun
+                           * geometryScale));
         };
         drawExtension(points[0], a);
         drawExtension(points[1], b);
@@ -2484,11 +2632,15 @@ void CadView::drawMeasurement(QPainter &painter,
             drawArrow(painter, points[0], foot, color);
             drawArrow(painter, foot, points[0], color);
             painter.setBrush(Qt::NoBrush);
-            painter.drawRect(QRectF(foot.x() - 3.0, foot.y() - 3.0,
-                                    6.0, 6.0));
+            const double footSize = 3.0 * geometryScale;
+            painter.drawRect(
+                QRectF(foot.x() - footSize,
+                       foot.y() - footSize,
+                       footSize * 2.0, footSize * 2.0));
             const QPointF dimensionMidpoint =
                 (points[0] + foot) * 0.5;
-            if (QLineF(label, dimensionMidpoint).length() > 14.0) {
+            if (QLineF(label, dimensionMidpoint).length()
+                > 14.0 * geometryScale) {
                 painter.setPen(QPen(color, selected ? 1.4 : 1.0));
                 painter.drawLine(label, dimensionMidpoint);
                 drawArrow(painter, dimensionMidpoint, label, color);
@@ -2496,10 +2648,12 @@ void CadView::drawMeasurement(QPainter &painter,
         }
     } else if (measurement.type == MeasurementType::Coordinate
                && !points.isEmpty()) {
-        painter.drawLine(points.first() + QPointF(-7, 0),
-                         points.first() + QPointF(7, 0));
-        painter.drawLine(points.first() + QPointF(0, -7),
-                         points.first() + QPointF(0, 7));
+        painter.drawLine(
+            points.first() + QPointF(-7.0 * geometryScale, 0.0),
+            points.first() + QPointF(7.0 * geometryScale, 0.0));
+        painter.drawLine(
+            points.first() + QPointF(0.0, -7.0 * geometryScale),
+            points.first() + QPointF(0.0, 7.0 * geometryScale));
     }
 
     QString labelText = value;
@@ -2575,7 +2729,8 @@ void CadView::drawMeasurement(QPainter &painter,
                 }
             }
         }
-        if (QLineF(label, target).length() > 14.0) {
+        if (QLineF(label, target).length()
+            > 14.0 * geometryScale) {
             painter.setPen(QPen(color, selected ? 1.7 : 1.2));
             painter.drawLine(label, target);
             drawArrow(painter, target, label, color);
@@ -2604,19 +2759,28 @@ void CadView::drawMeasurement(QPainter &painter,
                 QPointF::dotProduct(label - lineCenter, normal) >= 0.0
                 ? 1.0
                 : -1.0;
-            textAnchor = lineCenter + normal * side * 11.0;
+            textAnchor =
+                lineCenter
+                + normal * side
+                    * (styleMetrics.textGap * geometryScale);
         }
     } else if (measurement.type == MeasurementType::Linear
                && points.size() >= 2) {
         textAngle = measurement.auxiliaryValue == 2.0 ? -90.0 : 0.0;
         if (measurement.auxiliaryValue == 1.0) {
             const double side = label.y() >= points[0].y() ? 1.0 : -1.0;
-            textAnchor = QPointF((points[0].x() + points[1].x()) * 0.5,
-                                 label.y() + side * 11.0);
+            textAnchor = QPointF(
+                (points[0].x() + points[1].x()) * 0.5,
+                label.y()
+                    + side
+                        * (styleMetrics.textGap * geometryScale));
         } else {
             const double side = label.x() >= points[0].x() ? 1.0 : -1.0;
-            textAnchor = QPointF(label.x() + side * 11.0,
-                                 (points[0].y() + points[1].y()) * 0.5);
+            textAnchor = QPointF(
+                label.x()
+                    + side
+                        * (styleMetrics.textGap * geometryScale),
+                (points[0].y() + points[1].y()) * 0.5);
         }
     } else if (measurement.type == MeasurementType::Radius) {
         textAnchor = label;
@@ -2638,7 +2802,10 @@ void CadView::drawMeasurement(QPainter &painter,
                     QPointF::dotProduct(label - lineCenter, normal) >= 0.0
                     ? 1.0
                     : -1.0;
-                textAnchor = lineCenter + normal * side * 11.0;
+                textAnchor =
+                    lineCenter
+                    + normal * side
+                        * (styleMetrics.textGap * geometryScale);
             }
         }
     }
@@ -2975,7 +3142,7 @@ void CadView::mousePressEvent(QMouseEvent *event)
             m_selectedMeasurementId.clear();
             emit measurementsChanged();
             emit selectionChanged({});
-            setCursor(Qt::CrossCursor);
+            setCursor(Qt::BlankCursor);
             update();
             return;
         }
@@ -3269,18 +3436,30 @@ void CadView::mouseMoveEvent(QMouseEvent *event)
             hitMeasurementAt(event->position());
         if (hovered != m_hoveredMeasurementId) {
             m_hoveredMeasurementId = hovered;
-            setCursor(hovered.isEmpty() ? Qt::CrossCursor
+            setCursor(hovered.isEmpty() ? Qt::BlankCursor
                                         : Qt::PointingHandCursor);
         }
     } else if (!m_hoveredMeasurementId.isEmpty()) {
         m_hoveredMeasurementId.clear();
-        setCursor(Qt::CrossCursor);
+        setCursor(m_spaceDown ? Qt::OpenHandCursor
+                              : Qt::BlankCursor);
     }
-    // Selection mode has no canvas-following overlay. Re-rendering the whole
-    // drawing for every pointer move makes large plans appear frozen.
-    if (m_mode != ToolMode::Select) {
-        update();
+    // The CAD crosshair is drawn on the canvas in every idle tool state,
+    // including selection, so it must follow every pointer movement.
+    update();
+}
+
+void CadView::enterEvent(QEnterEvent *event)
+{
+    m_haveCursor = true;
+    m_cursorScreen = event->position();
+    updateSnap(m_cursorScreen);
+    if (!m_panning) {
+        setCursor(m_spaceDown ? Qt::OpenHandCursor
+                              : Qt::BlankCursor);
     }
+    update();
+    QOpenGLWidget::enterEvent(event);
 }
 
 void CadView::mouseReleaseEvent(QMouseEvent *event)
@@ -3291,8 +3470,8 @@ void CadView::mouseReleaseEvent(QMouseEvent *event)
         if (wasPanning) {
             m_panning = false;
             invalidatePanCache();
-            setCursor(m_spaceDown || m_mode == ToolMode::Select
-                          ? Qt::OpenHandCursor : Qt::CrossCursor);
+            setCursor(m_spaceDown ? Qt::OpenHandCursor
+                                  : Qt::BlankCursor);
             update();
             schedulePanCache();
             return;
@@ -3305,8 +3484,8 @@ void CadView::mouseReleaseEvent(QMouseEvent *event)
             || event->button() == Qt::LeftButton)) {
         m_panning = false;
         invalidatePanCache();
-        setCursor(m_spaceDown || m_mode == ToolMode::Select
-                      ? Qt::OpenHandCursor : Qt::CrossCursor);
+        setCursor(m_spaceDown ? Qt::OpenHandCursor
+                              : Qt::BlankCursor);
         update();
         schedulePanCache();
         return;
@@ -3316,7 +3495,7 @@ void CadView::mouseReleaseEvent(QMouseEvent *event)
         m_dragMeasurementId.clear();
         m_draftPoints.clear();
         emit measurementsChanged();
-        setCursor(Qt::OpenHandCursor);
+        setCursor(Qt::BlankCursor);
         update();
         return;
     }
@@ -3448,8 +3627,7 @@ void CadView::keyReleaseEvent(QKeyEvent *event)
     if (event->key() == Qt::Key_Space && !event->isAutoRepeat()) {
         m_spaceDown = false;
         if (!m_panning) {
-            setCursor(m_mode == ToolMode::Select
-                          ? Qt::OpenHandCursor : Qt::CrossCursor);
+            setCursor(Qt::BlankCursor);
         }
         return;
     }

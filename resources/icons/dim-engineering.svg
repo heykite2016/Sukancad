@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="120" height="48" viewBox="0 0 120 48">
-  <g fill="none" stroke="#69dfa0" stroke-width="1.5" stroke-linecap="round">
-    <path d="M14 13v28M106 13v28M14 31h92"/>
-    <path d="M14 31l10-5M14 31l10 5M106 31l-10-5M106 31l-10 5"/>
+  <g fill="none" stroke="#69dfa0" stroke-width="1.45" stroke-linecap="round">
+    <path d="M14 10v30M106 10v30M14 31h92"/>
+    <path d="M14 31l13-6M14 31l13 6M106 31l-13-6M106 31l-13 6"/>
   </g>
-  <text x="60" y="23" fill="#c9f4da" font-family="sans-serif" font-size="10" text-anchor="middle">12.50</text>
+  <text x="60" y="23" fill="#c9f4da" font-family="sans-serif" font-size="10" text-anchor="middle">工程  12.50</text>
 </svg>

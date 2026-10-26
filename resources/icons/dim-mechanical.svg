@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="120" height="48" viewBox="0 0 120 48">
-  <g fill="none" stroke="#69dfa0" stroke-width="1.3" stroke-linecap="square">
-    <path d="M16 14v25M104 14v25M16 31h88"/>
+  <g fill="none" stroke="#69dfa0" stroke-width="1.2" stroke-linecap="square">
+    <path d="M16 15v23M104 15v23M16 30h88"/>
   </g>
-  <path d="M16 31l7-3v6zM104 31l-7-3v6z" fill="#69dfa0"/>
-  <text x="60" y="23" fill="#c9f4da" font-family="sans-serif" font-size="9" text-anchor="middle">12.50</text>
+  <path d="M16 30l9-3v6zM104 30l-9-3v6z" fill="#69dfa0"/>
+  <text x="60" y="22" fill="#c9f4da" font-family="sans-serif" font-size="9" text-anchor="middle">ISO-25  12.5</text>
 </svg>

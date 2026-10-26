@@ -2543,9 +2543,9 @@ void MainWindow::showAnnotationSettings()
     layout->addLayout(form);
     auto *hint = new QLabel(
         QStringLiteral(
-            "默认颜色为绿色。标准、建筑、机械、工程、小数和紧凑样式"
-            "对应不同的字高、线宽及箭头形式；修改后会立即刷新当前图纸"
-            "的全部测量标注。"));
+            "默认颜色为绿色。六种样式分别使用实心箭头、建筑斜线、"
+            "窄箭头、开口箭头、圆点端部和端线标记；尺寸文字高度"
+            "参考图纸现有尺寸并随图纸缩放。"));
     hint->setWordWrap(true);
     hint->setObjectName(QStringLiteral("hintLabel"));
     layout->addWidget(hint);
@@ -2616,7 +2616,8 @@ void MainWindow::showHelp()
         <h3>单位、比例和标注样式</h3>
         <ul>
           <li>在“标注设置：样式、颜色、单位与精度”中选择长度、面积、坐标单位与精度。</li>
-          <li>标准、建筑、机械 ISO-25、工程、小数、紧凑六种 CAD 标注样式采用图形卡片勾选。</li>
+          <li>ISO 标准、建筑斜线、机械 ISO-25、工程开口箭头、小数圆点、紧凑端线六种样式可勾选切换。</li>
+          <li>尺寸文字高度参考图纸现有尺寸标注，并随图纸放大缩小同步变化。</li>
           <li>比例校准后自动保存到系统缓存目录。</li>
           <li>默认标注颜色为绿色，可单独修改。</li>
         </ul>

@@ -1,6 +1,7 @@
 #include "CadView.h"
 
 #include <QApplication>
+#include <QEnterEvent>
 #include <QFile>
 #include <QFileInfo>
 #include <QKeyEvent>
@@ -8,6 +9,7 @@
 #include <QPainter>
 #include <QPdfWriter>
 #include <QPrinter>
+#include <QSet>
 #include <QTemporaryDir>
 #include <QWheelEvent>
 
@@ -185,6 +187,48 @@ int main(int argc, char *argv[])
     if (display.annotationStyle != AnnotationStyle::Architectural) {
         return fail("default annotation style is not architectural");
     }
+    const QStringList expectedStyleLabels = {
+        QStringLiteral("ISO 标准"),
+        QStringLiteral("建筑斜线"),
+        QStringLiteral("机械 ISO-25"),
+        QStringLiteral("工程开口箭头"),
+        QStringLiteral("小数圆点"),
+        QStringLiteral("紧凑端线")
+    };
+    if (annotationStyleLabels() != expectedStyleLabels) {
+        return fail("annotation style labels are incomplete");
+    }
+    QSet<int> styleMarkers;
+    const QVector<AnnotationStyle> styles = {
+        AnnotationStyle::Standard,
+        AnnotationStyle::Architectural,
+        AnnotationStyle::Mechanical,
+        AnnotationStyle::Engineering,
+        AnnotationStyle::Decimal,
+        AnnotationStyle::Compact
+    };
+    for (AnnotationStyle style : styles) {
+        const AnnotationStyleMetrics metrics =
+            annotationStyleMetrics(style);
+        styleMarkers.insert(static_cast<int>(metrics.marker));
+    }
+    if (styleMarkers.size() != styles.size()) {
+        return fail("annotation styles do not have distinct markers");
+    }
+    QVector<QImage> styleImages;
+    for (AnnotationStyle style : styles) {
+        display.annotationStyle = style;
+        view.setDisplaySettings(display);
+        styleImages.append(view.renderToImage(QSize(900, 700)));
+    }
+    for (int i = 0; i < styleImages.size(); ++i) {
+        for (int j = i + 1; j < styleImages.size(); ++j) {
+            if (styleImages[i] == styleImages[j]) {
+                return fail(
+                    "annotation style selection did not change rendering");
+            }
+        }
+    }
     display.annotationStyle = AnnotationStyle::Architectural;
     display.lengthUnit = MeasuringUnit::Millimeter;
     display.lengthPrecision = 0;
@@ -203,6 +247,86 @@ int main(int argc, char *argv[])
         || !rectangleText.startsWith(QStringLiteral("面积："))
         || !rectangleText.contains(QStringLiteral("周长："))) {
         return fail("CAD measurement text format failed");
+    }
+
+    auto dimensionReferenceDocument = std::make_shared<CadDocument>();
+    dimensionReferenceDocument->path = QStringLiteral("dimensions.dxf");
+    dimensionReferenceDocument->fileName = QStringLiteral("dimensions.dxf");
+    dimensionReferenceDocument->bounds =
+        QRectF(0.0, 0.0, 1000.0, 800.0);
+    CadLayer dimensionReferenceLayer;
+    dimensionReferenceLayer.name = QStringLiteral("A-尺寸");
+    dimensionReferenceDocument->layers.append(dimensionReferenceLayer);
+    CadEntity sourceDimensionText;
+    sourceDimensionText.layer = dimensionReferenceLayer.name;
+    sourceDimensionText.type = CadEntityType::Text;
+    sourceDimensionText.text = QStringLiteral("1000");
+    sourceDimensionText.textPosition = QPointF(500.0, 400.0);
+    sourceDimensionText.points = {sourceDimensionText.textPosition};
+    sourceDimensionText.textHeight = 20.0;
+    sourceDimensionText.updateBounds();
+    dimensionReferenceDocument->entities.append(sourceDimensionText);
+    CadView dimensionReferenceView;
+    dimensionReferenceView.resize(900, 700);
+    dimensionReferenceView.setDocument(dimensionReferenceDocument);
+    dimensionReferenceView.fitToDrawing();
+    const double fittedDimensionText =
+        dimensionReferenceView.annotationTextPixelSize();
+    if (!near(fittedDimensionText,
+              20.0 * dimensionReferenceView.zoomScale())) {
+        return fail(
+            "annotation text does not match drawing dimension height");
+    }
+    dimensionReferenceView.zoomAt(
+        2.0, QPoint(450, 350));
+    if (!near(dimensionReferenceView.annotationTextPixelSize(),
+              fittedDimensionText * 2.0)) {
+        return fail("annotation text does not scale with the drawing");
+    }
+    bool receivedCursorPosition = false;
+    QObject::connect(
+        &dimensionReferenceView, &CadView::cursorWorldChanged,
+        [&receivedCursorPosition](const QPointF &) {
+            receivedCursorPosition = true;
+        });
+    QEnterEvent enterEvent(
+        QPointF(450.0, 350.0), QPointF(450.0, 350.0),
+        QPointF(450.0, 350.0));
+    QApplication::sendEvent(&dimensionReferenceView, &enterEvent);
+    if (!receivedCursorPosition
+        || dimensionReferenceView.cursor().shape()
+            != Qt::BlankCursor) {
+        return fail(
+            "mouse entry should show only the drawn CAD crosshair");
+    }
+    QMouseEvent canvasDragPress(
+        QEvent::MouseButtonPress, QPointF(450.0, 350.0),
+        QPointF(450.0, 350.0), QPointF(450.0, 350.0),
+        Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(&dimensionReferenceView, &canvasDragPress);
+    QMouseEvent canvasDragMove(
+        QEvent::MouseMove, QPointF(470.0, 365.0),
+        QPointF(470.0, 365.0), QPointF(470.0, 365.0),
+        Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(&dimensionReferenceView, &canvasDragMove);
+    if (dimensionReferenceView.cursor().shape()
+        != Qt::ClosedHandCursor) {
+        return fail("drawing pan should show the hand cursor");
+    }
+    QMouseEvent canvasDragRelease(
+        QEvent::MouseButtonRelease, QPointF(470.0, 365.0),
+        QPointF(470.0, 365.0), QPointF(470.0, 365.0),
+        Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(&dimensionReferenceView, &canvasDragRelease);
+    if (dimensionReferenceView.cursor().shape()
+        != Qt::BlankCursor) {
+        return fail("completed pan should restore the drawn crosshair");
+    }
+    dimensionReferenceView.beginTool(CadView::ToolMode::Linear);
+    if (dimensionReferenceView.cursor().shape()
+        != Qt::BlankCursor) {
+        return fail(
+            "measurement tools should hide the native cursor");
     }
 
     QRectF selectedPrintArea;

@@ -16,6 +16,7 @@
 #include <memory>
 
 class QMouseEvent;
+class QEnterEvent;
 class QPainter;
 class QPrinter;
 class QWheelEvent;
@@ -90,6 +91,7 @@ public:
     void zoomToWorldRect(const QRectF &area);
     void setDisplaySettings(const DisplaySettings &settings);
     const DisplaySettings &displaySettings() const { return m_settings; }
+    double annotationTextPixelSize() const;
     void setDrawingTheme(DrawingTheme theme);
     DrawingTheme drawingTheme() const { return m_drawingTheme; }
     QColor displayColor(const QColor &source) const;
@@ -151,6 +153,7 @@ protected:
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
     void mouseDoubleClickEvent(QMouseEvent *event) override;
+    void enterEvent(QEnterEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
     bool event(QEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
@@ -220,6 +223,8 @@ private:
                          QVector<QPointF> *path, double *length,
                          QPointF *midpoint) const;
     QPointF areaInteriorPoint(const QVector<QPointF> &vertices) const;
+    double dimensionReferenceTextHeightWorld() const;
+    double annotationGeometryScale() const;
 
     std::shared_ptr<CadDocument> m_document;
     SpatialIndex m_spatialIndex;
@@ -287,6 +292,7 @@ private:
     bool m_vectorCacheValid = false;
     bool m_buildingVectorCache = false;
     QHash<QString, QPainterPath> m_cadTextPathCache;
+    mutable QHash<QString, double> m_dimensionTextHeights;
     QPointF m_panCacheCenter;
     double m_panCacheScale = 1.0;
     bool m_panCacheValid = false;

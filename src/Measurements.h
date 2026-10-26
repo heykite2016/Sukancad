@@ -39,14 +39,23 @@ enum class AnnotationStyle {
     Compact
 };
 
+enum class AnnotationMarker {
+    FilledArrow,
+    ArchitecturalTick,
+    NarrowFilledArrow,
+    OpenArrow,
+    Dot,
+    EndBar
+};
+
 struct AnnotationStyleMetrics {
     double textSize = 12.0;
     double arrowSize = 9.0;
     double lineWidth = 1.35;
     double extensionOffset = 4.0;
     double extensionOverrun = 12.0;
-    bool tickArrow = false;
-    bool openArrow = false;
+    double textGap = 11.0;
+    AnnotationMarker marker = AnnotationMarker::FilledArrow;
 };
 
 struct DisplaySettings {

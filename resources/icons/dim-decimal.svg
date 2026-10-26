@@ -1,7 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="120" height="48" viewBox="0 0 120 48">
   <g fill="none" stroke="#69dfa0" stroke-width="1.4" stroke-linecap="square">
-    <path d="M15 13v28M105 13v28M15 31h90"/>
+    <path d="M15 12v27M105 12v27M15 31h90"/>
   </g>
-  <path d="M15 31l8-4v8zM105 31l-8-4v8z" fill="#69dfa0"/>
-  <text x="60" y="23" fill="#c9f4da" font-family="sans-serif" font-size="10" text-anchor="middle">12.500</text>
+  <circle cx="15" cy="31" r="3" fill="#69dfa0"/>
+  <circle cx="105" cy="31" r="3" fill="#69dfa0"/>
+  <text x="60" y="23" fill="#c9f4da" font-family="sans-serif" font-size="10" text-anchor="middle">小数  12.500</text>
 </svg>
