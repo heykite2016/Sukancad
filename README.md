@@ -138,3 +138,6 @@ Windows 产物包括完整 Qt 运行库的便携 ZIP 和 NSIS 安装器。当前
 ## 第三方许可
 
 `libdxfrw` 使用 GPL-2.0-or-later，`LibreDWG` 使用 GPL-3.0-or-later。Osifont 使用 GPL/LGPL 加字体例外。Noto Sans CJK SC 使用 SIL Open Font License 1.1。具体许可见 `third_party/libdxfrw/COPYING`、`third_party/libredwg/COPYING` 与 `resources/fonts/*license*`。
+
+速看CAD 项目自身按 GPL-3.0-or-later 发布，完整文本和第三方声明见
+`LICENSE` 与 `NOTICE.md`。
