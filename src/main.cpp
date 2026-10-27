@@ -40,7 +40,7 @@ int main(int argc, char *argv[])
     uiFont.setPointSizeF(11.5);
     application.setFont(uiFont);
     application.setApplicationName(QStringLiteral("CAD Lens"));
-    application.setApplicationDisplayName(QStringLiteral("CAD Lens 工程施工看图"));
+    application.setApplicationDisplayName(QStringLiteral("速看CAD 工程施工看图"));
     application.setOrganizationName(QStringLiteral("CAD Lens"));
     application.setApplicationVersion(QStringLiteral(CADLENS_VERSION));
     application.setWindowIcon(QIcon(QStringLiteral(":/icons/logo.svg")));

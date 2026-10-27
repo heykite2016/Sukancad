@@ -59,7 +59,7 @@ struct AnnotationStyleMetrics {
 };
 
 struct DisplaySettings {
-    AnnotationStyle annotationStyle = AnnotationStyle::Architectural;
+    AnnotationStyle annotationStyle = AnnotationStyle::Standard;
     MeasuringUnit lengthUnit = MeasuringUnit::Millimeter;
     MeasuringUnit areaUnit = MeasuringUnit::Meter;
     MeasuringUnit coordinateUnit = MeasuringUnit::Millimeter;
@@ -79,6 +79,8 @@ struct Measurement {
     QVector<double> edgeArcLengths;
     QVector<double> edgeLengths;
     QVector<QPointF> edgeMidpoints;
+    QVector<QPointF> edgeStarts;
+    QVector<QPointF> edgeEnds;
     QColor color = QColor(QStringLiteral("#37d67a"));
     bool visible = true;
     double auxiliaryValue = 0.0;

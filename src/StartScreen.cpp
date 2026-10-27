@@ -14,6 +14,7 @@
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QScrollArea>
+#include <QSizePolicy>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -93,7 +94,7 @@ StartScreen::StartScreen(QWidget *parent) : QWidget(parent)
     brandRow->addWidget(logo);
     auto *brandText = new QVBoxLayout;
     brandText->setSpacing(1);
-    auto *name = new QLabel(QStringLiteral("CAD LENS"));
+    auto *name = new QLabel(QStringLiteral("速看CAD"));
     name->setObjectName(QStringLiteral("startBrand"));
     auto *tagline = new QLabel(
         QStringLiteral("工程施工看图 · 精确测量 · 矢量标注"));
@@ -118,6 +119,8 @@ StartScreen::StartScreen(QWidget *parent) : QWidget(parent)
     auto *hero = new QFrame;
     hero->setObjectName(QStringLiteral("startHero"));
     hero->setMaximumWidth(430);
+    hero->setSizePolicy(
+        QSizePolicy::Preferred, QSizePolicy::Expanding);
     auto *heroLayout = new QHBoxLayout(hero);
     heroLayout->setContentsMargins(34, 28, 34, 28);
     auto *heroText = new QVBoxLayout;
@@ -138,14 +141,14 @@ StartScreen::StartScreen(QWidget *parent) : QWidget(parent)
     openButton->setMaximumWidth(250);
     connect(openButton, &QPushButton::clicked, this,
             &StartScreen::browseRequested);
+    heroText->insertStretch(0);
     heroText->addWidget(welcome);
     heroText->addWidget(description);
     heroText->addSpacing(8);
     heroText->addWidget(openButton);
     heroText->addStretch();
     heroLayout->addLayout(heroText, 1);
-    leftColumn->addWidget(hero);
-    leftColumn->addStretch();
+    leftColumn->addWidget(hero, 1);
 
     auto *recentHeader = new QHBoxLayout;
     auto *recentTitle = new QLabel(QStringLiteral("最近打开"));
@@ -184,7 +187,7 @@ StartScreen::StartScreen(QWidget *parent) : QWidget(parent)
     root->addLayout(workspace, 1);
 
     auto *footer = new QLabel(
-        QStringLiteral("CAD Lens · 本地读取 · 不上传图纸"));
+        QStringLiteral("速看CAD · 本地读取 · 不上传图纸"));
     footer->setObjectName(QStringLiteral("startFooter"));
     root->addWidget(footer);
 

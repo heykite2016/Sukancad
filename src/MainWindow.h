@@ -91,6 +91,7 @@ private:
     void requestCalibration(double rawLength);
     void showAnnotationSettings();
     void showHelp();
+    void showAbout();
     void beginFixedDistance();
     void beginAreaOffset();
     void beginSideArea();

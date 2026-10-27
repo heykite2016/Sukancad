@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.28)
 
-project(CadLens VERSION 1.0.1 LANGUAGES C CXX)
+project(CadLens VERSION 1.0.3 LANGUAGES C CXX)
 
 if(APPLE)
     enable_language(OBJCXX)
@@ -164,7 +164,7 @@ foreach(_CORE_TARGET cad_geometry cadview_core)
 endforeach()
 
 set_target_properties(CadLens PROPERTIES
-    MACOSX_BUNDLE_BUNDLE_NAME "CAD Lens"
+    MACOSX_BUNDLE_BUNDLE_NAME "速看CAD"
     MACOSX_BUNDLE_GUI_IDENTIFIER "com.cadlens.desktop"
     MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
     MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"

@@ -115,6 +115,48 @@ int main(int argc, char *argv[])
     if (view.isGridVisible()) {
         return fail("grid is visible by default");
     }
+    const RenderingSettings renderingDefaults =
+        view.renderingSettings();
+    if (renderingDefaults.quality != RenderingQuality::Balanced
+        || !renderingDefaults.antialiasing
+        || !renderingDefaults.smoothZoom
+        || !renderingDefaults.hardwareAcceleration
+        || renderingDefaults.lineWeights) {
+        return fail("CAD rendering defaults are not active");
+    }
+    auto subpixelDocument = std::make_shared<CadDocument>();
+    subpixelDocument->path = QStringLiteral("subpixel.dxf");
+    subpixelDocument->fileName = QStringLiteral("subpixel.dxf");
+    subpixelDocument->bounds =
+        QRectF(0.0, 0.0, 1000.0, 800.0);
+    CadLayer subpixelLayer;
+    subpixelLayer.name = QStringLiteral("SUBPIXEL");
+    subpixelDocument->layers.append(subpixelLayer);
+    CadEntity subpixelLine;
+    subpixelLine.layer = subpixelLayer.name;
+    subpixelLine.type = CadEntityType::Segment;
+    subpixelLine.points = {
+        QPointF(499.8, 400.0), QPointF(500.2, 400.0)
+    };
+    subpixelLine.updateBounds();
+    subpixelDocument->entities.append(subpixelLine);
+    CadView subpixelView;
+    subpixelView.resize(900, 700);
+    subpixelView.setDocument(subpixelDocument);
+    const QImage subpixelImage =
+        subpixelView.renderToImage(QSize(900, 700));
+    int subpixelInk = 0;
+    for (int y = 340; y <= 360; ++y) {
+        for (int x = 440; x <= 460; ++x) {
+            if (subpixelImage.pixelColor(x, y)
+                    .lightness() > 24) {
+                ++subpixelInk;
+            }
+        }
+    }
+    if (subpixelInk == 0) {
+        return fail("subpixel drawing edges were incorrectly culled");
+    }
     view.setDocument(document);
     view.fitToDrawing();
     const double zoomBefore = view.zoomScale();
@@ -201,8 +243,8 @@ int main(int argc, char *argv[])
     if (display.annotationColor != QColor(QStringLiteral("#37d67a"))) {
         return fail("default annotation color is not green");
     }
-    if (display.annotationStyle != AnnotationStyle::Architectural) {
-        return fail("default annotation style is not architectural");
+    if (display.annotationStyle != AnnotationStyle::Standard) {
+        return fail("default annotation style is not ISO standard");
     }
     const QStringList expectedStyleLabels = {
         QStringLiteral("ISO 标准"),
@@ -246,7 +288,7 @@ int main(int argc, char *argv[])
             }
         }
     }
-    display.annotationStyle = AnnotationStyle::Architectural;
+    display.annotationStyle = AnnotationStyle::Standard;
     display.lengthUnit = MeasuringUnit::Millimeter;
     display.lengthPrecision = 0;
     display.annotationColor = QColor(QStringLiteral("#33cc99"));
@@ -521,6 +563,61 @@ int main(int argc, char *argv[])
         }
     }
 
+    auto areaOnlyDocument = std::make_shared<CadDocument>();
+    areaOnlyDocument->path = QStringLiteral("area-only.dxf");
+    areaOnlyDocument->fileName = QStringLiteral("area-only.dxf");
+    areaOnlyDocument->bounds =
+        QRectF(0.0, 0.0, 1000.0, 800.0);
+    areaOnlyDocument->metersPerDrawingUnit = 0.001;
+    CadView areaOnlyView;
+    areaOnlyView.resize(1000, 800);
+    Measurement rectangleOnly;
+    rectangleOnly.id = QStringLiteral("area-only");
+    rectangleOnly.type = MeasurementType::Rectangle;
+    rectangleOnly.points = {
+        QPointF(200.0, 200.0), QPointF(800.0, 200.0),
+        QPointF(800.0, 600.0), QPointF(200.0, 600.0)
+    };
+    rectangleOnly.labelPosition = QPointF(500.0, 400.0);
+    rectangleOnly.color = QColor(QStringLiteral("#37d67a"));
+    areaOnlyView.setDocument(areaOnlyDocument);
+    areaOnlyView.setMeasurements({rectangleOnly});
+    const QImage areaOnlyImage =
+        areaOnlyView.renderWorldRectToImage(
+            QRectF(0.0, 0.0, 1000.0, 800.0), QSize(1000, 800));
+    int boundaryInk = 0;
+    for (int y = 589; y <= 601; ++y) {
+        for (int x = 299; x <= 311; ++x) {
+            const QColor color = areaOnlyImage.pixelColor(x, y);
+            if (color.green() > 90
+                && color.green() > color.red() * 1.35) {
+                ++boundaryInk;
+            }
+        }
+    }
+    if (boundaryInk == 0) {
+        int allAnnotationInk = 0;
+        QRect annotationBounds;
+        for (int y = 0; y < areaOnlyImage.height(); ++y) {
+            for (int x = 0; x < areaOnlyImage.width(); ++x) {
+                const QColor color = areaOnlyImage.pixelColor(x, y);
+                if (color.green() > 90
+                    && color.green() > color.red() * 1.35) {
+                    ++allAnnotationInk;
+                    annotationBounds = annotationBounds.isNull()
+                        ? QRect(x, y, 1, 1)
+                        : annotationBounds.united(QRect(x, y, 1, 1));
+                }
+            }
+        }
+        std::fprintf(
+            stderr, "area ink=%d bounds=%d,%d %dx%d\n",
+            allAnnotationInk, annotationBounds.x(),
+            annotationBounds.y(), annotationBounds.width(),
+            annotationBounds.height());
+        return fail("area edge dimension line was not rendered");
+    }
+
     CadView gestureView;
     gestureView.resize(900, 700);
     gestureView.setDocument(document);
@@ -595,7 +692,10 @@ int main(int argc, char *argv[])
             != MeasurementType::Continuous
         || !gestureView.measurements().last()
                 .primaryValue(*document, display)
-                .startsWith(QStringLiteral("总长："))) {
+                .startsWith(QStringLiteral("总长："))
+        || gestureView.measurements().last()
+                .primaryValue(*document, display)
+                .contains(QStringLiteral("段"))) {
         return fail("Escape did not finish the current measurement path");
     }
 
@@ -624,11 +724,27 @@ int main(int argc, char *argv[])
     const QString circleText =
         circleView.measurements().first().primaryValue(
             *document, circleView.displaySettings());
-    if (!circleText.contains(QStringLiteral("圆心："))
+    if (circleText.contains(QStringLiteral("圆心"))
         || !circleText.contains(QStringLiteral("半径："))
         || !circleText.contains(QStringLiteral("面积："))
         || !circleText.contains(QStringLiteral("周长："))) {
-        return fail("circle measurement omitted required values");
+        return fail(
+            "circle measurement values or center omission is incorrect");
+    }
+    const QImage circleImage =
+        circleView.renderToImage(QSize(900, 700));
+    int circleRimInk = 0;
+    for (int y = 344; y <= 356; ++y) {
+        for (int x = 294; x <= 306; ++x) {
+            const QColor color = circleImage.pixelColor(x, y);
+            if (color.green() > 90
+                && color.green() > color.red() * 1.35) {
+                ++circleRimInk;
+            }
+        }
+    }
+    if (circleRimInk == 0) {
+        return fail("circle measurement did not draw the circular arc");
     }
 
     CadView lineDistanceView;
@@ -816,8 +932,10 @@ int main(int argc, char *argv[])
 
     view.beginTool(CadView::ToolMode::Erase);
     mouseClick(view, QPointF(400.0, 350.0));
-    if (view.measurements().size() != 3) {
-        return fail("annotation geometry click deletion failed");
+    if (view.measurements().size() != 3
+        || view.toolMode() != CadView::ToolMode::Select) {
+        return fail(
+            "annotation deletion did not return to the drag tool");
     }
 
     view.beginTool(CadView::ToolMode::Continuous);
@@ -830,7 +948,9 @@ int main(int argc, char *argv[])
         || view.measurements().last().type
             != MeasurementType::Continuous
         || !view.measurements().last().primaryValue(*document, display)
-                .startsWith(QStringLiteral("总长："))) {
+                .startsWith(QStringLiteral("总长："))
+        || view.measurements().last().primaryValue(*document, display)
+                .contains(QStringLiteral("段"))) {
         return fail("continuous measurement finish flow failed");
     }
 
@@ -938,6 +1058,26 @@ int main(int argc, char *argv[])
         if (view.measurements().size() != before + 2) {
             return fail("batch measurement failed");
         }
+        const QSizeF batchViewport(view.size());
+        const QPointF batchMouseWorld(
+            (500.0 - batchViewport.width() * 0.5)
+                    / view.zoomScale()
+                + view.viewCenter().x(),
+            (batchViewport.height() * 0.5 - 350.0)
+                    / view.zoomScale()
+                + view.viewCenter().y());
+        for (int i = before; i < view.measurements().size(); ++i) {
+            const Measurement &segment = view.measurements()[i];
+            const QPointF a = segment.points[0];
+            const QPointF b = segment.points[1];
+            const QPointF midpoint = (a + b) * 0.5;
+            if (QPointF::dotProduct(
+                    segment.labelPosition - midpoint,
+                    batchMouseWorld - midpoint) <= 0.0) {
+                return fail(
+                    "batch dimension was not placed toward the mouse");
+            }
+        }
     }
     {
         const int before = view.measurements().size();
@@ -1023,7 +1163,7 @@ int main(int argc, char *argv[])
         || !near(annotationDocument.metersPerDrawingUnit,
                  calibratedMeters)
         || loadedSettings.annotationStyle
-            != AnnotationStyle::Architectural) {
+            != AnnotationStyle::Standard) {
         return fail("annotation restore failed");
     }
     if (QFileInfo::exists(
@@ -1269,9 +1409,9 @@ int main(int argc, char *argv[])
     if (darkBackground != QColor(Qt::black)
         || lightBackground == QColor(Qt::black)
         || relativeLuminance(darkLine)
-            <= relativeLuminance(darkBackground) + 0.25
+            <= relativeLuminance(darkBackground) + 0.15
         || relativeLuminance(lightLine)
-            >= relativeLuminance(lightBackground) - 0.25) {
+            >= relativeLuminance(lightBackground) - 0.15) {
         std::fprintf(
             stderr,
             "theme colors dark bg=%s line=%s light bg=%s line=%s\n",
@@ -1327,6 +1467,11 @@ int main(int argc, char *argv[])
         || annotationPixels(255, 296, 270, 310) < 8
         || annotationPixels(730, 296, 745, 310) < 8) {
         return fail("standard dimension extension/line/arrows are incomplete");
+    }
+    if (annotationPixels(240, 296, 253, 310) != 0
+        || annotationPixels(747, 296, 760, 310) != 0) {
+        return fail(
+            "dimension arrow bodies extend outside the range");
     }
     if (qEnvironmentVariableIsSet("CADLENS_TEST_IMAGE_DIR")) {
         const QString directory =

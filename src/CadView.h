@@ -22,6 +22,20 @@ class QPrinter;
 class QWheelEvent;
 class QKeyEvent;
 
+enum class RenderingQuality {
+    High,
+    Balanced,
+    Performance
+};
+
+struct RenderingSettings {
+    RenderingQuality quality = RenderingQuality::Balanced;
+    bool antialiasing = true;
+    bool smoothZoom = true;
+    bool hardwareAcceleration = true;
+    bool lineWeights = false;
+};
+
 class CadView : public QOpenGLWidget, protected QOpenGLFunctions {
     Q_OBJECT
 
@@ -108,6 +122,10 @@ public:
     bool isGridVisible() const { return m_gridVisible; }
     void setOrthoEnabled(bool enabled);
     bool isOrthoEnabled() const { return m_orthoEnabled; }
+    void setRenderingSettings(const RenderingSettings &settings);
+    const RenderingSettings &renderingSettings() const {
+        return m_renderingSettings;
+    }
     void applyCalibration(double knownLength, MeasuringUnit entryUnit);
 
     bool undo();
@@ -207,6 +225,11 @@ private:
                    const QPointF &toward, const QColor &color);
     QColor printColor(const QColor &source) const;
     QColor printColor(const CadEntity &entity) const;
+    void drawInlineDimension(
+        QPainter &painter, const QString &text,
+        const QPointF &worldStart, const QPointF &worldEnd,
+        const QPointF &leaderHint, const QColor &color,
+        QRectF *hitRect = nullptr, bool bothTerminals = true);
     void drawSnapMarker(QPainter &painter, const QPointF &screenPoint,
                         SnapKind kind);
     void drawDeleteHoverMarker(QPainter &painter);
@@ -229,6 +252,8 @@ private:
     QPointF areaInteriorPoint(const QVector<QPointF> &vertices) const;
     double dimensionReferenceTextHeightWorld() const;
     double annotationGeometryScale() const;
+    bool antialiasingEnabled() const;
+    qreal renderCachePixelRatio() const;
 
     std::shared_ptr<CadDocument> m_document;
     SpatialIndex m_spatialIndex;
@@ -276,9 +301,10 @@ private:
     QRectF m_eraseScreenRect;
 
     DisplaySettings m_settings;
+    RenderingSettings m_renderingSettings;
     DrawingTheme m_drawingTheme = DrawingTheme::CadDark;
     double m_toolAuxiliaryValue = 0.0;
-    bool m_lineWeightsVisible = true;
+    bool m_lineWeightsVisible = false;
     bool m_printStyle = false;
     bool m_printBlackInk = true;
     QSizeF m_renderSize;
@@ -296,6 +322,7 @@ private:
     QSize m_vectorCacheSize;
     bool m_vectorCacheValid = false;
     bool m_buildingVectorCache = false;
+    bool m_drawingDraftPreview = false;
     QHash<QString, QPainterPath> m_cadTextPathCache;
     mutable QHash<QString, double> m_dimensionTextHeights;
     QPointF m_panCacheCenter;

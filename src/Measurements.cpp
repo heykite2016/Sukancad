@@ -445,16 +445,9 @@ QString Measurement::primaryValue(const CadDocument &document,
         if (points.size() >= 2) {
             const double radius =
                 QLineF(points[0], points[1]).length();
-            const QString centerX = formatDimensionValue(
-                points[0].x(), document, settings.coordinateUnit,
-                settings.coordinatePrecision);
-            const QString centerY = formatDimensionValue(
-                points[0].y(), document, settings.coordinateUnit,
-                settings.coordinatePrecision);
             return QStringLiteral(
-                       "圆心：（%1，%2）\n半径：%3\n面积：%4\n周长：%5")
-                .arg(centerX, centerY,
-                     formatDimensionValue(
+                       "半径：%1\n面积：%2\n周长：%3")
+                .arg(formatDimensionValue(
                          radius, document, settings.lengthUnit,
                          settings.lengthPrecision),
                      formatAreaValue(rawArea(), document,
@@ -520,11 +513,10 @@ QString Measurement::primaryValue(const CadDocument &document,
         }
         break;
     case MeasurementType::Continuous:
-        return QStringLiteral("总长：%1（%2 段）")
+        return QStringLiteral("总长：%1")
             .arg(formatDimensionValue(rawLength(), document,
                                       settings.lengthUnit,
-                                      settings.lengthPrecision))
-            .arg(qMax(0, points.size() - 1));
+                                      settings.lengthPrecision));
     default:
         break;
     }
@@ -554,6 +546,10 @@ QJsonObject Measurement::toJson() const
     object.insert(QStringLiteral("edgeLengths"), edgeLengths);
     object.insert(QStringLiteral("edgeMidpoints"),
                   pointsToJson(edgeMidpoints));
+    object.insert(QStringLiteral("edgeStarts"),
+                  pointsToJson(edgeStarts));
+    object.insert(QStringLiteral("edgeEnds"),
+                  pointsToJson(edgeEnds));
     object.insert(QStringLiteral("color"), color.name(QColor::HexArgb));
     object.insert(QStringLiteral("visible"), visible);
     object.insert(QStringLiteral("auxiliaryValue"), auxiliaryValue);
@@ -592,6 +588,10 @@ Measurement Measurement::fromJson(const QJsonObject &object)
     }
     measurement.edgeMidpoints = pointsFromJson(
         object.value(QStringLiteral("edgeMidpoints")).toArray());
+    measurement.edgeStarts = pointsFromJson(
+        object.value(QStringLiteral("edgeStarts")).toArray());
+    measurement.edgeEnds = pointsFromJson(
+        object.value(QStringLiteral("edgeEnds")).toArray());
     const QColor savedColor(
         object.value(QStringLiteral("color")).toString());
     if (savedColor.isValid()) {

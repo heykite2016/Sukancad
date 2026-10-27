@@ -38,6 +38,7 @@
 #include <QMessageBox>
 #include <QPageSize>
 #include <QPainter>
+#include <QPixmap>
 #include <QPrinter>
 #include <QPrinterInfo>
 #include <QProgressBar>
@@ -362,7 +363,7 @@ private:
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
 {
-    setWindowTitle(QStringLiteral("CAD Lens · 工程施工看图"));
+    setWindowTitle(QStringLiteral("速看CAD · 工程施工看图"));
     setWindowIcon(QIcon(QStringLiteral(":/icons/logo.svg")));
     resize(1500, 940);
     setMinimumSize(1040, 680);
@@ -602,6 +603,7 @@ void MainWindow::createActions()
         QStringLiteral("确认后删除当前图纸上的全部标注"));
     connect(m_deleteAllAction, &QAction::triggered, this, [this] {
         if (!m_view->document() || m_view->measurements().isEmpty()) {
+            m_view->beginTool(CadView::ToolMode::Select);
             return;
         }
         const QMessageBox::StandardButton answer = QMessageBox::question(
@@ -613,6 +615,7 @@ void MainWindow::createActions()
         if (answer == QMessageBox::Yes) {
             m_view->removeAllMeasurements();
         }
+        m_view->beginTool(CadView::ToolMode::Select);
     });
     makeToolAction(QStringLiteral("对齐尺寸"), QStringLiteral("linear"),
                    CadView::ToolMode::Aligned,
@@ -630,7 +633,7 @@ void MainWindow::createActions()
     makeToolAction(QStringLiteral("多边形/闭合面积"),
                    QStringLiteral("polygon"), CadView::ToolMode::Polygon,
                    QKeySequence(QStringLiteral("P")));
-    makeToolAction(QStringLiteral("圆：圆心/半径/面积/周长"),
+    makeToolAction(QStringLiteral("圆：半径/面积/周长"),
                    QStringLiteral("circle-area"),
                    CadView::ToolMode::CircleArea);
     makeToolAction(QStringLiteral("填充面积"), QStringLiteral("filled-area"),
@@ -696,6 +699,7 @@ void MainWindow::createActions()
             if (item) {
                 m_view->removeMeasurement(
                     item->data(Qt::UserRole).toString());
+                m_view->beginTool(CadView::ToolMode::Select);
             }
         }
     });
@@ -749,7 +753,7 @@ void MainWindow::createActions()
         makeAction(QStringLiteral("显示 CAD 线宽"),
                    QStringLiteral("lineweight"));
     m_lineWeightAction->setCheckable(true);
-    m_lineWeightAction->setChecked(true);
+    m_lineWeightAction->setChecked(false);
     connect(m_lineWeightAction, &QAction::toggled, this,
             [this](bool visible) {
                 if (m_view) m_view->setLineWeightsVisible(visible);
@@ -827,7 +831,7 @@ void MainWindow::createInterface()
     auto *titleLayout = new QVBoxLayout(titleStack);
     titleLayout->setContentsMargins(8, 2, 8, 2);
     titleLayout->setSpacing(0);
-    m_titleLabel = new QLabel(QStringLiteral("CAD Lens"));
+    m_titleLabel = new QLabel(QStringLiteral("速看CAD"));
     m_titleLabel->setObjectName(QStringLiteral("documentTitle"));
     m_drawingMetaLabel =
         new QLabel(QStringLiteral("DWG / DXF / PDF · 施工测量"));
@@ -1086,7 +1090,7 @@ void MainWindow::createInterface()
     m_documentTabs->setUsesScrollButtons(true);
     m_documentTabs->setElideMode(Qt::ElideMiddle);
     m_documentTabs->addTab(QStringLiteral("启动页"));
-    m_documentTabs->setTabToolTip(0, QStringLiteral("CAD Lens 启动工作区"));
+    m_documentTabs->setTabToolTip(0, QStringLiteral("速看CAD 启动工作区"));
     m_documentTabs->setTabButton(0, QTabBar::RightSide, nullptr);
     documentTabsRow->addWidget(m_documentTabs);
     documentTabsRow->addStretch();
@@ -1241,18 +1245,8 @@ void MainWindow::createMenus()
     help->setShortcut(QKeySequence::HelpContents);
     connect(help, &QAction::triggered, this, &MainWindow::showHelp);
     helpMenu->addSeparator();
-    QAction *about = helpMenu->addAction(QStringLiteral("关于 CAD Lens"));
-    connect(about, &QAction::triggered, this, [this] {
-        QMessageBox::about(
-            this, QStringLiteral("关于 CAD Lens"),
-            QStringLiteral(
-                "<h3>CAD Lens 0.1</h3>"
-                "<p>面向工程施工看图的 DWG/DXF/PDF 测量与矢量标注工具。</p>"
-                "<p>DWG/DXF 解析：libdxfrw（GPL-2.0）<br>"
-                "PDF 渲染：macOS PDFKit<br>"
-                "界面与图形：Qt 6 / OpenGL<br>"
-                "所有产品图标、文字与测量标注均为矢量绘制。</p>"));
-    });
+    QAction *about = helpMenu->addAction(QStringLiteral("关于速看CAD"));
+    connect(about, &QAction::triggered, this, &MainWindow::showAbout);
 }
 
 void MainWindow::applyStyle()
@@ -1849,7 +1843,7 @@ void MainWindow::finishDrawingLoad()
     refreshStatus();
     m_dirty = false;
     setWindowTitle(
-        QStringLiteral("%1 · CAD Lens").arg(result.document->fileName));
+        QStringLiteral("%1 · 速看CAD").arg(result.document->fileName));
     m_titleLabel->setText(result.document->fileName);
     m_drawingMetaLabel->setText(
         result.document->isPdf()
@@ -1987,10 +1981,10 @@ void MainWindow::closeDocumentTab(int index)
         m_summaryLabel->setText(QStringLiteral("尚未添加测量标注"));
         m_undoAction->setEnabled(false);
         m_redoAction->setEnabled(false);
-        m_titleLabel->setText(QStringLiteral("CAD Lens"));
+        m_titleLabel->setText(QStringLiteral("速看CAD"));
         m_drawingMetaLabel->setText(
             QStringLiteral("DWG / DXF / PDF · 施工测量"));
-        setWindowTitle(QStringLiteral("CAD Lens · 工程施工看图"));
+        setWindowTitle(QStringLiteral("速看CAD · 工程施工看图"));
         {
             const QSignalBlocker blocker(m_documentTabs);
             m_documentTabs->setCurrentIndex(0);
@@ -2111,7 +2105,7 @@ void MainWindow::refreshDocumentUi()
     refreshMeasurementTable();
     refreshStatus();
     m_dirty = false;
-    setWindowTitle(QStringLiteral("%1 · CAD Lens").arg(title));
+    setWindowTitle(QStringLiteral("%1 · 速看CAD").arg(title));
     m_titleLabel->setText(title);
     m_drawingMetaLabel->setText(
         QStringLiteral("%1 · %2 个图层 · %3")
@@ -2122,7 +2116,7 @@ void MainWindow::refreshDocumentUi()
 
 void MainWindow::showLoadError(const QString &message)
 {
-    m_titleLabel->setText(QStringLiteral("CAD Lens"));
+    m_titleLabel->setText(QStringLiteral("速看CAD"));
     m_drawingMetaLabel->setText(
         QStringLiteral("DWG / DXF / PDF · 施工测量"));
     QMessageBox::warning(
@@ -2580,7 +2574,7 @@ void MainWindow::showAnnotationSettings()
 void MainWindow::showHelp()
 {
     QDialog dialog(this);
-    dialog.setWindowTitle(QStringLiteral("CAD Lens 使用帮助"));
+    dialog.setWindowTitle(QStringLiteral("速看CAD 使用帮助"));
     dialog.resize(820, 680);
     auto *layout = new QVBoxLayout(&dialog);
     auto *browser = new QTextBrowser;
@@ -2594,7 +2588,7 @@ void MainWindow::showHelp()
         code { color:#155e75; background:#eef4f7; padding:1px 4px; }
         .tip { background:#eef7f1; border-left:4px solid #2ba76b; padding:9px 12px; }
         </style></head><body>
-        <h2>CAD Lens 工程施工看图</h2>
+        <h2>速看CAD 工程施工看图</h2>
         <p>本软件直接读取 DWG/DXF 的模型空间与布局及 PDF 页面，测量、标注和比例数据均保存在系统缓存中。</p>
         <h3>打开与视图</h3>
         <ul>
@@ -2607,9 +2601,11 @@ void MainWindow::showHelp()
         <ul>
           <li>对齐、线性、连续、批量、矩形、多边形、圆、角度、弧长、坐标、点到直线和定距测量。</li>
           <li>连续/批量/多边形可在最后一点按 <code>Esc</code>、右键、Enter 或双击结束，再单击放置尺寸文字。</li>
+          <li>连续测量逐段在线段上显示独立长度，总长单独标注；批量尺寸按鼠标方向布置。</li>
+          <li>连续、面积和半径尺寸线绘制在对应边线或半径线上，文字覆盖部分自动断开；长度不足时自动使用引线，圆不标注圆心位置。</li>
           <li>点到直线：先选点，再单击已有直线；系统自动求垂足，在点与垂足间绘制尺寸线。</li>
           <li>矩形和多边形只绘制边界和尺寸，不填充测量区域。</li>
-          <li>圆测量在圆周或圆弧上取三个不重复点，显示圆心、半径、面积和周长。</li>
+          <li>圆测量在圆周或圆弧上取三个不重复点，显示半径、面积和周长，不标注圆心位置。</li>
         </ul>
         <h3>对象捕捉</h3>
         <p>支持端点、中点、交点、垂足、圆心、象限点和最近点。测量十字线贯穿绘图区，中心小方框为拾取范围提示。</p>
@@ -2643,6 +2639,96 @@ void MainWindow::showHelp()
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close);
     connect(buttons, &QDialogButtonBox::rejected, &dialog,
             &QDialog::reject);
+    layout->addWidget(buttons);
+    dialog.exec();
+}
+
+void MainWindow::showAbout()
+{
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("关于速看CAD"));
+    dialog.setMinimumWidth(680);
+    auto *layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(24, 22, 24, 18);
+    layout->setSpacing(16);
+
+    auto *content = new QHBoxLayout;
+    content->setSpacing(24);
+    auto *info = new QVBoxLayout;
+    info->setSpacing(10);
+    auto *title = new QLabel(QStringLiteral("速看CAD"));
+    title->setObjectName(QStringLiteral("panelTitle"));
+    QFont titleFont = title->font();
+    titleFont.setPointSizeF(24.0);
+    titleFont.setBold(true);
+    title->setFont(titleFont);
+    auto *version = new QLabel(
+        QStringLiteral("版本 %1")
+            .arg(QCoreApplication::applicationVersion()));
+    version->setObjectName(QStringLiteral("documentMeta"));
+    auto *description = new QLabel(
+        QStringLiteral(
+            "速看CAD 是面向工程施工人员的本地图纸查看、测量与标注工具。"
+            "可直接打开 DWG、DXF 和 PDF 图纸，查看模型与布局，"
+            "完成尺寸、面积、角度等工程测量，并保存矢量化标注。"
+            "所有图纸均在本机处理，不上传文件。"));
+    description->setWordWrap(true);
+    description->setMinimumWidth(360);
+    auto *author = new QLabel(
+        QStringLiteral("开发者：Mr. 王嘉"));
+    auto *wechat = new QLabel(
+        QStringLiteral("微信：SerendipityWangJia"));
+    author->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    wechat->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    info->addWidget(title);
+    info->addWidget(version);
+    info->addSpacing(4);
+    info->addWidget(description);
+    info->addSpacing(8);
+    info->addWidget(author);
+    info->addWidget(wechat);
+    info->addStretch();
+    content->addLayout(info, 1);
+
+    auto *donationPanel = new QFrame;
+    donationPanel->setObjectName(QStringLiteral("sidePanel"));
+    auto *donationLayout = new QVBoxLayout(donationPanel);
+    donationLayout->setContentsMargins(14, 14, 14, 14);
+    donationLayout->setSpacing(8);
+    auto *donationTitle = new QLabel(QStringLiteral("微信打赏"));
+    donationTitle->setAlignment(Qt::AlignCenter);
+    donationTitle->setObjectName(QStringLiteral("panelTitle"));
+    auto *qr = new QLabel;
+    qr->setAlignment(Qt::AlignCenter);
+    qr->setFixedSize(210, 210);
+    QPixmap donationQr(
+        QStringLiteral(":/images/wechat-donation.png"));
+    if (!donationQr.isNull()) {
+        qr->setPixmap(donationQr.scaled(
+            200, 200, Qt::KeepAspectRatio,
+            Qt::SmoothTransformation));
+        qr->setStyleSheet(
+            QStringLiteral("background:white;border:1px solid #d6dde1;"));
+    } else {
+        qr->setText(QStringLiteral("微信收款码\n待提供"));
+        qr->setStyleSheet(
+            QStringLiteral(
+                "background:#f7f8f8;color:#70808a;"
+                "border:1px dashed #b9c3c9;"));
+    }
+    auto *hint = new QLabel(
+        QStringLiteral("感谢支持持续维护"));
+    hint->setAlignment(Qt::AlignCenter);
+    hint->setObjectName(QStringLiteral("hintLabel"));
+    donationLayout->addWidget(donationTitle);
+    donationLayout->addWidget(qr, 0, Qt::AlignCenter);
+    donationLayout->addWidget(hint);
+    content->addWidget(donationPanel);
+    layout->addLayout(content);
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close);
+    connect(buttons, &QDialogButtonBox::rejected,
+            &dialog, &QDialog::reject);
     layout->addWidget(buttons);
     dialog.exec();
 }
@@ -3406,7 +3492,7 @@ void MainWindow::saveAnnotationsAs()
     }
     const QString path = QFileDialog::getSaveFileName(
         this, QStringLiteral("标注另存为"), m_lastDirectory,
-        QStringLiteral("CAD Lens 标注 (*.cadlens.json);;JSON (*.json)"));
+        QStringLiteral("速看CAD 标注 (*.cadlens.json);;JSON (*.json)"));
     if (path.isEmpty()) {
         return;
     }
