@@ -4,6 +4,18 @@
 
 当前发布版本：`1.0.3`。Windows 10+ x64；macOS 12+ Universal 2。
 
+## 下载安装
+
+- **macOS 12+（Intel / Apple Silicon）**：
+  [PKG 安装包](https://github.com/heykite2016/Sukancad/releases/download/v1.0.3/CadLens-1.0.3-macos12-universal.pkg)
+  · [DMG 安装包](https://github.com/heykite2016/Sukancad/releases/download/v1.0.3/CadLens-1.0.3-macos12-universal.dmg)
+- **Windows 10+ x64**：
+  [安装程序](https://github.com/heykite2016/Sukancad/releases/download/v1.0.3/CadLens-1.0.3-windows10-x64-setup.exe)
+  · [便携版 ZIP](https://github.com/heykite2016/Sukancad/releases/download/v1.0.3/CadLens-1.0.3-windows10-x64-portable.zip)
+- [查看全部发布文件及源码包](https://github.com/heykite2016/Sukancad/releases/tag/v1.0.3)
+
+macOS 当前采用 ad-hoc 签名，尚未完成 Apple Developer ID 签名及公证。
+
 ## 已实现
 
 - 启动工作区：类似图像软件的欢迎页，提供独立打开入口和最近打开的 10 张图纸缩略图；缩略图保存在本地缓存，不上传图纸。
