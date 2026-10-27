@@ -2,9 +2,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BUILD_DIR="${CADLENS_WIN_BUILD_DIR:-$ROOT_DIR/build-win64}"
-QT_WIN="${CADLENS_WIN_QT_ROOT:-$HOME/Library/Caches/CadLens/Qt/6.8.3/windows-llvm-mingw/6.8.3/llvm-mingw_64}"
-MINGW_ROOT="${CADLENS_LLVM_MINGW_ROOT:-$HOME/Library/Caches/CadLens/toolchains/llvm-mingw-20261020-ucrt-macos-universal}"
+BUILD_DIR="${CADLENS_WIN_BUILD_DIR:-$ROOT_DIR/build-win64-clang17}"
+QT_WIN="${CADLENS_WIN_QT_ROOT:-$HOME/Library/Caches/CadLens/Qt/6.8.3/6.8.3/llvm-mingw_64}"
+MINGW_ROOT="${CADLENS_LLVM_MINGW_ROOT:-$HOME/Library/Caches/CadLens/toolchains/llvm-mingw-20231128-ucrt-macos-universal}"
 MAKENSIS="${CADLENS_MAKENSIS:-/tmp/nsis-3.11-src/build/urelease/makensis/makensis}"
 NSISDIR="${CADLENS_NSISDIR:-/tmp/nsis-bin/nsis-3.11}"
 VERSION="1.0.3"

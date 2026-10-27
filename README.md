@@ -70,10 +70,14 @@ Qt 构建依赖保存在 `~/Library/Caches/CadLens/Qt/6.8.3/macos`，不占用�
 
 macOS 产物为 macOS 12+、Intel + Apple Silicon Universal 2 的 DMG 与 PKG。
 
-Windows 10+ x64 可在 macOS 上使用 Qt 6.8.3 `win64_llvm_mingw`、LLVM-MinGW 和静态 libiconv 交叉编译：
+Windows 10+ x64 可在 macOS 上使用 Qt 6.8.3 `win64_llvm_mingw`、llvm-mingw 20231128（Clang 17）和静态 libiconv 交叉编译。Qt 6.8.3 的 Windows 运行库按 Clang 17 ABI 构建，不能混用其他版本的 `libc++.dll`；工具链配置会拒绝非 Clang 17 编译器：
 
 ```bash
-cmake -S . -B build-win64 -G Ninja \
+export CADLENS_LLVM_MINGW_ROOT="$HOME/Library/Caches/CadLens/toolchains/llvm-mingw-20231128-ucrt-macos-universal"
+export CADLENS_WIN_QT_ROOT="$HOME/Library/Caches/CadLens/Qt/6.8.3/6.8.3/llvm-mingw_64"
+export CADLENS_ICONV_ROOT="$HOME/Library/Caches/CadLens/third-party/libiconv-win64"
+
+cmake -S . -B build-win64-clang17 -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE="$PWD/script/toolchains/llvm-mingw-windows.cmake" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_PREFIX_PATH="$CADLENS_WIN_QT_ROOT;$CADLENS_ICONV_ROOT" \
@@ -81,7 +85,7 @@ cmake -S . -B build-win64 -G Ninja \
   -DIconv_INCLUDE_DIR="$CADLENS_ICONV_ROOT/include" \
   -DIconv_LIBRARY="$CADLENS_ICONV_ROOT/lib/libiconv.a" \
   -DBUILD_TESTING=OFF
-cmake --build build-win64 -j8
+cmake --build build-win64-clang17 -j8
 ./script/package_windows.sh
 ```
 

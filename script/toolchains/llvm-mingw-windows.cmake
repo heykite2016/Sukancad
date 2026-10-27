@@ -21,6 +21,18 @@ set(CMAKE_RANLIB
 set(CMAKE_STRIP
     "${_MINGW_ROOT}/bin/x86_64-w64-mingw32-strip")
 
+execute_process(
+    COMMAND "${CMAKE_CXX_COMPILER}" --version
+    OUTPUT_VARIABLE _CADLENS_CXX_VERSION
+    ERROR_QUIET
+)
+if(NOT _CADLENS_CXX_VERSION MATCHES "clang version 17\\.")
+    message(FATAL_ERROR
+        "Qt 6.8.3 llvm-mingw builds require Clang 17. "
+        "Found: ${_CADLENS_CXX_VERSION}"
+    )
+endif()
+
 set(CMAKE_FIND_ROOT_PATH
     "$ENV{CADLENS_WIN_QT_ROOT}"
     "${_MINGW_ROOT}/x86_64-w64-mingw32")
