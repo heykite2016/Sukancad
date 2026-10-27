@@ -1,0 +1,9 @@
+.DS_Store
+.qt/
+build/
+build-*/
+dist/
+CadLensIOS/
+copyright-application/
+*.log
+*.user

@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+
+APP="/Applications/CadLens.app"
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+
+if [ -d "$APP" ] && [ -x "$LSREGISTER" ]; then
+    "$LSREGISTER" -f "$APP" >/dev/null 2>&1 || true
+fi
+
+exit 0

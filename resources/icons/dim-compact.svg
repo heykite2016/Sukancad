@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="48" viewBox="0 0 120 48">
+  <g fill="none" stroke="#69dfa0" stroke-width="1.1" stroke-linecap="square">
+    <path d="M18 13v26M102 13v26M18 31h84"/>
+    <path d="M18 28v6M102 28v6"/>
+  </g>
+  <text x="60" y="24" fill="#c9f4da" font-family="sans-serif" font-size="8" text-anchor="middle">紧凑 12.5</text>
+</svg>
