@@ -2,6 +2,7 @@
 
 #include <QApplication>
 #include <QEnterEvent>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QKeyEvent>
@@ -11,6 +12,7 @@
 #include <QPrinter>
 #include <QSet>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <QWheelEvent>
 
 #include <cmath>
@@ -131,6 +133,49 @@ int main(int argc, char *argv[])
         || renderingDefaults.lineWeights) {
         return fail("CAD rendering defaults are not active");
     }
+
+    auto clusteredDocument = std::make_shared<CadDocument>();
+    clusteredDocument->path = QStringLiteral("clustered.memory.dxf");
+    clusteredDocument->fileName = QStringLiteral("clustered.memory.dxf");
+    clusteredDocument->bounds = QRectF(0.0, 0.0, 10000.0, 4000.0);
+    CadLayer clusteredLayer;
+    clusteredLayer.name = QStringLiteral("DENSE");
+    clusteredDocument->layers.append(clusteredLayer);
+    const auto addClusterLine = [&clusteredDocument, &clusteredLayer](
+                                    const QPointF &position) {
+        CadEntity line;
+        line.layer = clusteredLayer.name;
+        line.type = CadEntityType::Segment;
+        line.points = {position, position + QPointF(40.0, 0.0)};
+        line.updateBounds();
+        clusteredDocument->entities.append(line);
+    };
+    for (int row = 0; row < 20; ++row) {
+        for (int column = 0; column < 20; ++column) {
+            addClusterLine(QPointF(1000.0 + column * 75.0,
+                                   1000.0 + row * 100.0));
+        }
+    }
+    for (int index = 0; index < 20; ++index) {
+        addClusterLine(QPointF(8000.0 + index * 25.0,
+                               1800.0 + (index % 4) * 80.0));
+    }
+    CadView clusteredView;
+    clusteredView.resize(1000, 700);
+    clusteredView.setDocument(clusteredDocument);
+    QEventLoop initialFitLoop;
+    QTimer::singleShot(60, &initialFitLoop, &QEventLoop::quit);
+    initialFitLoop.exec();
+    const double clusteredScale = clusteredView.zoomScale();
+    if (clusteredView.viewCenter().x() >= 5000.0) {
+        return fail("opening a drawing did not focus its dense region");
+    }
+    clusteredView.fitToDrawing();
+    if (!near(clusteredView.viewCenter().x(), 5000.0)
+        || !(clusteredView.zoomScale() < clusteredScale)) {
+        return fail("show-all no longer fits the complete drawing bounds");
+    }
+
     auto subpixelDocument = std::make_shared<CadDocument>();
     subpixelDocument->path = QStringLiteral("subpixel.dxf");
     subpixelDocument->fileName = QStringLiteral("subpixel.dxf");
@@ -1286,6 +1331,41 @@ int main(int argc, char *argv[])
              *frozenLayoutDocument, frozenLayoutDocument->entities,
              QStringLiteral("冻结布局")).isEmpty()) {
         return fail("layout ignored frozen-layer visibility");
+    }
+
+    auto fittedTextDocument = std::make_shared<CadDocument>();
+    fittedTextDocument->bounds = QRectF(0.0, 0.0, 1000.0, 800.0);
+    fittedTextDocument->layers.append(layer);
+    CadEntity fittedText;
+    fittedText.layer = layer.name;
+    fittedText.type = CadEntityType::Text;
+    fittedText.text = QStringLiteral("A");
+    fittedText.textHeight = 20.0;
+    fittedText.textPosition = QPointF(200.0, 400.0);
+    fittedText.textAlignmentPoint = QPointF(400.0, 400.0);
+    fittedText.textFit = true;
+    fittedText.updateBounds();
+    fittedTextDocument->entities.append(fittedText);
+    fittedTextDocument->layouts.append(QStringLiteral("拟合文本布局"));
+    fittedTextDocument->layoutEntities.insert(
+        QStringLiteral("拟合文本布局"), QVector<CadEntity>{});
+    CadViewportDefinition fittedTextViewport;
+    fittedTextViewport.center = QPointF(1000.0, 800.0);
+    fittedTextViewport.windowSize = QSizeF(500.0, 400.0);
+    fittedTextViewport.modelCenter = QPointF(500.0, 400.0);
+    fittedTextViewport.viewHeight = 800.0;
+    fittedTextDocument->layoutViewports.insert(
+        QStringLiteral("拟合文本布局"),
+        QVector<CadViewportDefinition>{fittedTextViewport});
+    const auto fittedLayout = CadView::composeLayoutContent(
+        *fittedTextDocument, fittedTextDocument->entities,
+        QStringLiteral("拟合文本布局"));
+    if (fittedLayout.size() != 1
+        || !near(fittedLayout.first().textPosition.x(), 850.0)
+        || !near(fittedLayout.first().textPosition.y(), 800.0)
+        || !near(fittedLayout.first().textAlignmentPoint.x(), 950.0)
+        || !near(fittedLayout.first().textAlignmentPoint.y(), 800.0)) {
+        return fail("layout did not transform both fitted text anchors");
     }
 
     CadView orthoView;

@@ -82,6 +82,14 @@ struct CadPdfPage {
     QImage printImage;
 };
 
+struct CadExternalReference {
+    QString name;
+    QString savedPath;
+    QString resolvedPath;
+    bool fileFound = false;
+    bool loaded = false;
+};
+
 struct CadEntity {
     CadEntityType type = CadEntityType::Segment;
     quint64 sourceHandle = 0;
@@ -132,6 +140,7 @@ struct CadDocument {
     QHash<QString, QVector<CadEntity>> layoutEntities;
     QHash<QString, QVector<CadViewportDefinition>> layoutViewports;
     QHash<QString, QRectF> layoutBounds;
+    QVector<CadExternalReference> externalReferences;
     QVector<CadPdfPage> pdfPages;
     QRectF computedBounds;
     QRectF declaredBounds;
@@ -153,7 +162,8 @@ struct CadDocument {
     bool calibrated = false;
     qint64 loadMilliseconds = 0;
 
-    bool load(const QString &filePath, QString *errorMessage);
+    bool load(const QString &filePath, QString *errorMessage,
+              const QHash<QString, QString> &externalReferencePaths = {});
     bool isPdf() const { return sourceFormat == QStringLiteral("PDF"); }
     const CadPdfPage *pdfPage(const QString &name) const;
     CadPdfPage *pdfPage(const QString &name);
@@ -168,6 +178,8 @@ bool isRenderableCadEntity(const CadEntity &entity);
 QString measuringUnitLabel(MeasuringUnit unit);
 QString measuringUnitSuffix(MeasuringUnit unit, bool squared = false);
 QColor displayColorForDarkCanvas(const QColor &source);
+QRectF cadInitialViewBounds(const QVector<CadEntity> &entities,
+                           const QRectF &drawingBounds);
 QString drawingParsedCachePath(const QString &drawingPath);
 double measuringUnitMeters(MeasuringUnit unit);
 MeasuringUnit measuringUnitFromInsUnits(int insUnits);

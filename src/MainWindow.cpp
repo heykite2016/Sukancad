@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "FileAssociation.h"
 #include "StartScreen.h"
 
 #include <QAction>
@@ -114,6 +115,53 @@ QString applicationSettingsPath()
 QSettings applicationSettings()
 {
     return QSettings(applicationSettingsPath(), QSettings::IniFormat);
+}
+
+QString externalReferenceStorageKey(const QString &drawingPath)
+{
+    const QFileInfo info(drawingPath);
+    const QString canonical = info.canonicalFilePath().isEmpty()
+        ? info.absoluteFilePath() : info.canonicalFilePath();
+    return QStringLiteral("fileReferences/")
+        + QCryptographicHash::hash(canonical.toUtf8(),
+                                   QCryptographicHash::Sha256)
+              .toHex();
+}
+
+QHash<QString, QString> storedExternalReferencePaths(
+    const QString &drawingPath)
+{
+    QSettings settings = applicationSettings();
+    const QJsonDocument document = QJsonDocument::fromJson(
+        settings.value(externalReferenceStorageKey(drawingPath))
+            .toByteArray());
+    QHash<QString, QString> paths;
+    if (!document.isObject()) {
+        return paths;
+    }
+    const QJsonObject object = document.object();
+    for (auto iterator = object.constBegin(); iterator != object.constEnd();
+         ++iterator) {
+        const QString path = iterator.value().toString();
+        if (!path.isEmpty()) {
+            paths.insert(iterator.key(), path);
+        }
+    }
+    return paths;
+}
+
+void saveExternalReferencePaths(
+    const QString &drawingPath, const QHash<QString, QString> &paths)
+{
+    QJsonObject object;
+    for (auto iterator = paths.constBegin(); iterator != paths.constEnd();
+         ++iterator) {
+        object.insert(iterator.key(), iterator.value());
+    }
+    QSettings settings = applicationSettings();
+    settings.setValue(externalReferenceStorageKey(drawingPath),
+                      QJsonDocument(object).toJson(QJsonDocument::Compact));
+    settings.sync();
 }
 
 void saveApplicationDisplaySettings(const DisplaySettings &settings)
@@ -817,6 +865,20 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     createMenus();
     applyStyle();
 
+    QString associationError;
+    FileAssociation::registerOpenWith(&associationError);
+    if (settings.value(QStringLiteral("fileAssociation/dwgDefault"), false)
+            .toBool()) {
+        FileAssociation::setDefault(FileAssociation::DocumentType::Dwg, true);
+    }
+    if (settings.value(QStringLiteral("fileAssociation/dxfDefault"), false)
+            .toBool()) {
+        FileAssociation::setDefault(FileAssociation::DocumentType::Dxf, true);
+    }
+    if (!associationError.isEmpty()) {
+        statusBar()->showMessage(associationError, 8000);
+    }
+
     m_lastDirectory =
         legacySettings.value(
             QStringLiteral("lastDirectory"),
@@ -1209,6 +1271,12 @@ void MainWindow::createActions()
                    QStringLiteral("settings"));
     connect(m_annotationSettingsAction, &QAction::triggered, this,
             &MainWindow::showAnnotationSettings);
+    m_fileAssociationAction =
+        makeAction(QStringLiteral("文件关联设置"),
+                   QStringLiteral("settings"),
+                   QKeySequence::Preferences);
+    connect(m_fileAssociationAction, &QAction::triggered, this,
+            &MainWindow::showFileAssociationSettings);
     m_layerPanelAction =
         makeAction(QStringLiteral("图层管理"), QStringLiteral("layers"));
     m_layerPanelAction->setCheckable(true);
@@ -1739,7 +1807,7 @@ void MainWindow::createInterface()
     m_startScreen = new StartScreen;
     m_startScreen->setMotionEnabled(
         interfaceSettings
-            .value(QStringLiteral("startup/motionEnabled"), true)
+            .value(QStringLiteral("startup/motionEnabled"), false)
             .toBool());
     connect(m_startScreen, &StartScreen::browseRequested, this,
             [this] { m_openAction->trigger(); });
@@ -2014,6 +2082,10 @@ void MainWindow::createMenus()
         connect(action, &QAction::toggled, this,
                 &MainWindow::updateSnapModesFromMenu);
     }
+
+    auto *settingsMenu = menuBar()->addMenu(QStringLiteral("设置"));
+    settingsMenu->addAction(m_annotationSettingsAction);
+    settingsMenu->addAction(m_fileAssociationAction);
 
     auto *helpMenu = menuBar()->addMenu(QStringLiteral("帮助"));
     QAction *help = helpMenu->addAction(QStringLiteral("使用帮助"));
@@ -2792,6 +2864,14 @@ void MainWindow::setCadTheme(CadTheme theme, bool persist)
 
 void MainWindow::openDrawing(const QString &path)
 {
+    openDrawingWithExternalReferences(
+        path, storedExternalReferencePaths(path));
+}
+
+void MainWindow::openDrawingWithExternalReferences(
+    const QString &path,
+    const QHash<QString, QString> &externalReferencePaths)
+{
     if (m_loading || path.isEmpty()) {
         return;
     }
@@ -2821,13 +2901,15 @@ void MainWindow::openDrawing(const QString &path)
         QStringLiteral("正在解析 %1 ...").arg(info.fileName()));
     m_titleLabel->setText(info.fileName());
     m_drawingMetaLabel->setText(QStringLiteral("正在读取图纸..."));
-    m_loadWatcher->setFuture(QtConcurrent::run([path] {
+    m_loadWatcher->setFuture(QtConcurrent::run(
+        [path, externalReferencePaths] {
         DrawingLoadResult result;
+        result.externalReferencePaths = externalReferencePaths;
         auto document = std::make_shared<CadDocument>();
         QElapsedTimer stageTimer;
         stageTimer.start();
         QString error;
-        if (document->load(path, &error)) {
+        if (document->load(path, &error, externalReferencePaths)) {
             const qint64 parseMilliseconds = stageTimer.restart();
             result.layoutContents =
                 CadView::prepareAllLayoutContents(*document);
@@ -2870,6 +2952,115 @@ void MainWindow::finishDrawingLoad()
         showLoadError(result.error);
         return;
     }
+
+    QVector<const CadExternalReference *> unresolvedReferences;
+    for (const CadExternalReference &reference :
+         std::as_const(result.document->externalReferences)) {
+        if (!reference.fileFound || !reference.loaded) {
+            unresolvedReferences.append(&reference);
+        }
+    }
+    if (!unresolvedReferences.isEmpty()) {
+        QStringList missingNames;
+        for (const CadExternalReference *reference :
+             std::as_const(unresolvedReferences)) {
+            const QString name = reference->name.isEmpty()
+                ? QFileInfo(reference->savedPath).fileName()
+                : reference->name;
+            if (!name.isEmpty()) {
+                missingNames.append(name);
+            }
+        }
+
+        QMessageBox locateDialog(this);
+        locateDialog.setIcon(QMessageBox::Question);
+        locateDialog.setWindowTitle(QStringLiteral("定位外部参照"));
+        locateDialog.setText(
+            QStringLiteral("图纸引用了未加载的外部图纸。"));
+        locateDialog.setInformativeText(
+            QStringLiteral(
+                "缺少：%1\n\n请选择参照文件的位置。选择后会自动重新加载"
+                "主图，并记住路径供下次打开使用。")
+                .arg(missingNames.join(QStringLiteral("、"))));
+        QPushButton *locateButton = locateDialog.addButton(
+            QStringLiteral("选择文件位置"), QMessageBox::AcceptRole);
+        locateDialog.addButton(QStringLiteral("暂时跳过"),
+                               QMessageBox::RejectRole);
+        locateDialog.exec();
+
+        if (locateDialog.clickedButton() == locateButton) {
+            QHash<QString, QString> selectedPaths =
+                result.externalReferencePaths;
+            QString initialDirectory =
+                QFileInfo(result.document->path).absolutePath();
+            bool selectedAny = false;
+            for (const CadExternalReference *reference :
+                 std::as_const(unresolvedReferences)) {
+                QString suggestedName = reference->name.isEmpty()
+                    ? QFileInfo(reference->savedPath).fileName()
+                    : reference->name;
+                if (suggestedName.isEmpty()) {
+                    suggestedName = QStringLiteral("外部参照");
+                }
+                if (!suggestedName.endsWith(QStringLiteral(".dwg"),
+                                            Qt::CaseInsensitive)
+                    && !suggestedName.endsWith(QStringLiteral(".dxf"),
+                                               Qt::CaseInsensitive)) {
+                    suggestedName += QStringLiteral(".dwg");
+                }
+                const QString selectedPath = QFileDialog::getOpenFileName(
+                    this,
+                    QStringLiteral("定位外部参照 · %1").arg(suggestedName),
+                    QDir(initialDirectory).filePath(suggestedName),
+                    QStringLiteral("参照图纸 (*.dwg *.dxf);;所有文件 (*)"));
+                if (selectedPath.isEmpty()) {
+                    continue;
+                }
+                const QFileInfo selectedInfo(selectedPath);
+                const QString canonicalSelected =
+                    selectedInfo.canonicalFilePath().isEmpty()
+                    ? selectedInfo.absoluteFilePath()
+                    : selectedInfo.canonicalFilePath();
+                if (!reference->name.isEmpty()) {
+                    selectedPaths.insert(reference->name, canonicalSelected);
+                }
+                if (!reference->savedPath.isEmpty()) {
+                    selectedPaths.insert(reference->savedPath,
+                                         canonicalSelected);
+                }
+                const QString savedName =
+                    QFileInfo(reference->savedPath).fileName();
+                if (!savedName.isEmpty()) {
+                    selectedPaths.insert(savedName, canonicalSelected);
+                }
+                initialDirectory = selectedInfo.absolutePath();
+                selectedAny = true;
+            }
+
+            if (selectedAny) {
+                saveExternalReferencePaths(result.document->path,
+                                           selectedPaths);
+                m_progress->show();
+                statusBar()->showMessage(
+                    QStringLiteral("正在加载所选外部参照并重新生成视图..."));
+                {
+                    const QSignalBlocker blocker(m_loadWatcher);
+                    m_loadWatcher->setFuture(
+                        QFuture<DrawingLoadResult>());
+                }
+                m_loading = false;
+                const QString drawingPath = result.document->path;
+                QTimer::singleShot(
+                    0, this,
+                    [this, drawingPath, selectedPaths] {
+                        openDrawingWithExternalReferences(
+                            drawingPath, selectedPaths);
+                    });
+                return;
+            }
+        }
+    }
+
     setDrawingActionsEnabled(true);
     if (m_activeDocumentIndex >= 0) {
         auto *newView = new CadView;
@@ -2969,6 +3160,37 @@ void MainWindow::finishDrawingLoad()
     }
     m_view->setFocus();
     beginSelectAndFit();
+    if (!result.document->externalReferences.isEmpty()) {
+        QStringList referenceLines;
+        bool anyUnavailable = false;
+        for (const CadExternalReference &reference :
+             std::as_const(result.document->externalReferences)) {
+            const QString name = reference.name.isEmpty()
+                ? QFileInfo(reference.savedPath).fileName()
+                : reference.name;
+            const QString state = reference.loaded
+                ? QStringLiteral("已加载")
+                : reference.fileFound
+                    ? QStringLiteral("读取失败")
+                    : QStringLiteral("文件缺失");
+            referenceLines.append(
+                QStringLiteral("• %1（%2）").arg(name, state));
+            anyUnavailable = anyUnavailable
+                || !reference.fileFound || !reference.loaded;
+        }
+        if (anyUnavailable) {
+            const QString message = QStringLiteral(
+                  "图纸包含 %1 个外部参照，当前只显示了主图内容。\n\n"
+                  "未加载的外部参照：\n%2\n\n"
+                  "请确认参照文件完整，并与主图放在同一目录后重新打开。")
+                .arg(result.document->externalReferences.size())
+                .arg(referenceLines.join(QLatin1Char('\n')));
+            QTimer::singleShot(0, this, [this, message] {
+                QMessageBox::warning(
+                    this, QStringLiteral("外部参照未完整加载"), message);
+            });
+        }
+    }
     QTimer::singleShot(0, this, [this] {
         if (!m_loading && m_loadWatcher
             && m_loadWatcher->isFinished()) {
@@ -3997,6 +4219,9 @@ void MainWindow::showAnnotationSettings()
     layout->addWidget(hint);
     auto *buttons = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("确定"));
+    buttons->button(QDialogButtonBox::Cancel)
+        ->setText(QStringLiteral("取消"));
     connect(buttons, &QDialogButtonBox::accepted, &dialog,
             &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, &dialog,
@@ -4025,6 +4250,233 @@ void MainWindow::showAnnotationSettings()
     refreshUnitControls();
     refreshMeasurementTable();
     setDirty(true);
+}
+
+void MainWindow::showFileAssociationSettings()
+{
+    QSettings values = applicationSettings();
+    const bool savedDwgDefault = values.value(
+        QStringLiteral("fileAssociation/dwgDefault"),
+        FileAssociation::isDefault(FileAssociation::DocumentType::Dwg))
+                                    .toBool();
+    const bool savedDxfDefault = values.value(
+        QStringLiteral("fileAssociation/dxfDefault"),
+        FileAssociation::isDefault(FileAssociation::DocumentType::Dxf))
+                                    .toBool();
+
+    QDialog dialog(this);
+    dialog.setObjectName(QStringLiteral("fileAssociationDialog"));
+    dialog.setWindowTitle(QStringLiteral("文件关联设置"));
+    dialog.resize(640, 540);
+    dialog.setMinimumWidth(580);
+    auto *layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(22, 20, 22, 18);
+    layout->setSpacing(14);
+
+    auto *header = new QFrame;
+    header->setObjectName(QStringLiteral("associationHeader"));
+    auto *headerLayout = new QHBoxLayout(header);
+    headerLayout->setContentsMargins(16, 14, 16, 14);
+    headerLayout->setSpacing(14);
+    auto *logo = new QLabel;
+    logo->setFixedSize(48, 48);
+    logo->setPixmap(
+        QIcon(QStringLiteral(":/icons/logo.svg")).pixmap(48, 48));
+    auto *heading = new QVBoxLayout;
+    heading->setSpacing(3);
+    auto *title = new QLabel(QStringLiteral("选择速看CAD如何处理图纸文件"));
+    title->setObjectName(QStringLiteral("associationTitle"));
+    auto *description = new QLabel(
+        QStringLiteral("三种格式都会出现在系统“打开方式”列表中。"));
+    description->setWordWrap(true);
+    description->setObjectName(QStringLiteral("associationSubtitle"));
+    heading->addWidget(title);
+    heading->addWidget(description);
+    headerLayout->addWidget(logo);
+    headerLayout->addLayout(heading, 1);
+    layout->addWidget(header);
+
+    auto *typePanel = new QFrame;
+    typePanel->setObjectName(QStringLiteral("associationCard"));
+    auto *typeLayout = new QVBoxLayout(typePanel);
+    typeLayout->setContentsMargins(15, 13, 15, 13);
+    typeLayout->setSpacing(0);
+
+    const auto addTypeRow = [&](const QString &iconPath,
+                                const QString &format,
+                                const QString &detail,
+                                QCheckBox *toggle,
+                                const QString &rightText) {
+        auto *row = new QWidget;
+        auto *rowLayout = new QHBoxLayout(row);
+        rowLayout->setContentsMargins(2, 10, 2, 10);
+        rowLayout->setSpacing(13);
+        auto *icon = new QLabel;
+        icon->setFixedSize(52, 52);
+        icon->setPixmap(QIcon(iconPath).pixmap(52, 52));
+        auto *text = new QVBoxLayout;
+        text->setSpacing(2);
+        auto *formatLabel = new QLabel(format);
+        formatLabel->setObjectName(QStringLiteral("associationFormat"));
+        auto *detailLabel = new QLabel(detail);
+        detailLabel->setWordWrap(true);
+        detailLabel->setObjectName(QStringLiteral("associationDetail"));
+        text->addWidget(formatLabel);
+        text->addWidget(detailLabel);
+        rowLayout->addWidget(icon);
+        rowLayout->addLayout(text, 1);
+        if (toggle) {
+            toggle->setText(QStringLiteral("设为默认"));
+            toggle->setCursor(Qt::PointingHandCursor);
+            rowLayout->addWidget(toggle, 0, Qt::AlignVCenter);
+        } else {
+            auto *badge = new QLabel(rightText);
+            badge->setObjectName(QStringLiteral("associationBadge"));
+            badge->setAlignment(Qt::AlignCenter);
+            rowLayout->addWidget(badge, 0, Qt::AlignVCenter);
+        }
+        typeLayout->addWidget(row);
+        return row;
+    };
+
+    auto *dwgDefault = new QCheckBox;
+    dwgDefault->setChecked(savedDwgDefault);
+    auto *dwgRow = addTypeRow(
+        QStringLiteral(":/icons/file-dwg.svg"), QStringLiteral("DWG 图纸"),
+        QStringLiteral("双击 DWG 文件时使用速看CAD，并显示专属 DWG 图标。"),
+        dwgDefault, QString());
+    auto *dividerOne = new QFrame;
+    dividerOne->setFrameShape(QFrame::HLine);
+    dividerOne->setObjectName(QStringLiteral("associationDivider"));
+    typeLayout->addWidget(dividerOne);
+
+    auto *dxfDefault = new QCheckBox;
+    dxfDefault->setChecked(savedDxfDefault);
+    auto *dxfRow = addTypeRow(
+        QStringLiteral(":/icons/file-dxf.svg"), QStringLiteral("DXF 图纸"),
+        QStringLiteral("双击 DXF 文件时使用速看CAD，并显示专属 DXF 图标。"),
+        dxfDefault, QString());
+    auto *dividerTwo = new QFrame;
+    dividerTwo->setFrameShape(QFrame::HLine);
+    dividerTwo->setObjectName(QStringLiteral("associationDivider"));
+    typeLayout->addWidget(dividerTwo);
+
+    auto *pdfRow = addTypeRow(
+        QStringLiteral(":/icons/pdf.svg"), QStringLiteral("PDF 文档"),
+        QStringLiteral("列入“打开方式”，不会自动更改系统默认 PDF 阅读器。"),
+        nullptr, QStringLiteral("仅加入打开方式"));
+    Q_UNUSED(dwgRow)
+    Q_UNUSED(dxfRow)
+    Q_UNUSED(pdfRow)
+    layout->addWidget(typePanel);
+
+    auto *note = new QLabel(
+        QStringLiteral(
+            "Windows 10/11 和 macOS 可能要求你在系统设置中确认默认应用。"
+            "关闭开关不会删除“打开方式”入口，也不会影响其他文件格式。"));
+    note->setObjectName(QStringLiteral("associationNote"));
+    note->setWordWrap(true);
+    layout->addWidget(note);
+
+    auto *settingsButton = new QPushButton(
+        QStringLiteral("打开系统默认应用设置"));
+    settingsButton->setCursor(Qt::PointingHandCursor);
+    connect(settingsButton, &QPushButton::clicked, this, [] {
+        FileAssociation::openSystemDefaultAppsSettings();
+    });
+    layout->addWidget(settingsButton, 0, Qt::AlignLeft);
+    layout->addStretch();
+
+    auto *buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("确定"));
+    buttons->button(QDialogButtonBox::Cancel)
+        ->setText(QStringLiteral("取消"));
+    connect(buttons, &QDialogButtonBox::accepted, &dialog,
+            &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog,
+            &QDialog::reject);
+    layout->addWidget(buttons);
+
+    dialog.setStyleSheet(QStringLiteral(R"(
+        QDialog#fileAssociationDialog {
+            background: #f2f5f6; color: #17262d;
+        }
+        QFrame#associationHeader {
+            background: #ffffff; border: 1px solid #cfdce1;
+            border-radius: 11px;
+        }
+        QLabel#associationTitle {
+            color: #123745; font-size: 17px; font-weight: 700;
+        }
+        QLabel#associationSubtitle, QLabel#associationDetail {
+            color: #60747d; font-size: 12px;
+        }
+        QFrame#associationCard {
+            background: #ffffff; border: 1px solid #cfdce1;
+            border-radius: 11px;
+        }
+        QLabel#associationFormat {
+            color: #193641; font-size: 14px; font-weight: 700;
+        }
+        QLabel#associationBadge {
+            color: #0b5d49; background: #e6f6ef;
+            border: 1px solid #b9dfcf; border-radius: 8px;
+            padding: 5px 9px; font-size: 11px; font-weight: 600;
+        }
+        QFrame#associationDivider {
+            color: #e1e8eb; background: #e1e8eb; max-height: 1px;
+        }
+        QCheckBox { color: #193641; font-weight: 600; spacing: 7px; }
+        QLabel#associationNote {
+            color: #506771; background: #e9f3f6;
+            border: 1px solid #cbdfe6; border-radius: 8px;
+            padding: 10px 12px; font-size: 12px;
+        }
+        QPushButton {
+            min-height: 31px; border-radius: 6px; padding: 0 12px;
+        }
+    )"));
+
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+
+    QString registrationError;
+    FileAssociation::registerOpenWith(&registrationError);
+    const FileAssociation::ApplyResult dwgResult =
+        FileAssociation::setDefault(FileAssociation::DocumentType::Dwg,
+                                    dwgDefault->isChecked());
+    const FileAssociation::ApplyResult dxfResult =
+        FileAssociation::setDefault(FileAssociation::DocumentType::Dxf,
+                                    dxfDefault->isChecked());
+    values.setValue(QStringLiteral("fileAssociation/dwgDefault"),
+                    dwgDefault->isChecked());
+    values.setValue(QStringLiteral("fileAssociation/dxfDefault"),
+                    dxfDefault->isChecked());
+    values.sync();
+
+    QStringList failures;
+    if (!registrationError.isEmpty()) {
+        failures.append(registrationError);
+    }
+    if (!dwgResult.success) {
+        failures.append(QStringLiteral("DWG：") + dwgResult.message);
+    }
+    if (!dxfResult.success) {
+        failures.append(QStringLiteral("DXF：") + dxfResult.message);
+    }
+    if (!failures.isEmpty()) {
+        QMessageBox::warning(
+            this, QStringLiteral("文件关联需要系统确认"),
+            failures.join(QStringLiteral("\n\n"))
+                + QStringLiteral(
+                    "\n\nDWG、DXF、PDF 已保留在“打开方式”列表中。"
+                    "可点击设置窗口中的“打开系统默认应用设置”完成确认。"));
+    } else {
+        statusBar()->showMessage(
+            QStringLiteral("文件关联设置已保存并生效"), 5000);
+    }
 }
 
 void MainWindow::showHelp()
@@ -4147,7 +4599,7 @@ void MainWindow::showHelp()
         <p>速看CAD 直接读取 DWG、DXF、PDF 及其模型空间和布局。图纸、测量和校准数据只在本机处理。</p>
         <h3>打开与视图</h3>
         <ul>
-          <li>启动页使用恒定饱和度与明度的 HSL 色相流光，主光从左后方 45° 柔和漫射，渐变按 40% 透明区、20% 指数过渡带和 40% 光核构成，明暗交界带占线宽 1/6；右上角“动效”开关可暂停或恢复并自动保存选择。最多显示 20 张最近图纸，每行 4 张。</li>
+          <li>启动页使用恒定饱和度与明度的 HSL 色相流光，主光从左后方 45° 柔和漫射，渐变按 40% 透明区、20% 指数过渡带和 40% 光核构成，明暗交界带占线宽 1/6；右上角“动效”开关可开启或关闭并自动保存选择，默认关闭以减少启动时的资源占用。最多显示 20 张最近图纸，每行 4 张。</li>
           <li>左键拖动图纸平移；滚轮以鼠标位置为中心缩放；<kbd>0</kbd> 显示全图。</li>
           <li>模型与布局分别保存各自的视口；切回时恢复切换前的中心和缩放，不强制复位。</li>
           <li>“视图 → 主题”提供 CAD 深色、CAD 浅色、CAD 深灰和经典蓝图；画布、界面与工具栏图标颜色同步切换，并在下次启动时恢复。</li>
@@ -4195,6 +4647,19 @@ void MainWindow::showHelp()
           <li>关闭图纸标签会释放图元、布局、空间索引、文字轮廓、矢量缓存和加载结果占用的内存。</li>
           <li>主题、标注样式、颜色、单位和十字光标设置保存到软件配置文件，下次启动自动恢复；图纸专属参数可在其后再覆盖全局值。</li>
           <li>解析缓存、缩略图和标注保存在系统缓存目录；删除最近记录不会删除原图纸。</li>
+        </ul>
+        <h3>文件关联与默认打开程序</h3>
+        <ul>
+          <li>在“设置 → 文件关联设置”中可分别开启或关闭 DWG、DXF 的默认打开程序；设置会保存并在下次启动时恢复。</li>
+          <li>DWG、DXF 和 PDF 均会加入系统“打开方式”列表。PDF 只登记为可选阅读器，不会自动更改系统默认 PDF 应用。</li>
+          <li>通过速看CAD关联打开的 DWG、DXF 文件会显示对应的绿色或蓝色 CAD 文件图标。</li>
+          <li>Windows 10/11 或 macOS 阻止自动更改时，应用会提示；可点击设置窗口中的“打开系统默认应用设置”完成系统确认。</li>
+        </ul>
+        <h3>外部参照</h3>
+        <ul>
+          <li>DWG 引用的外部图纸缺失或读取失败时，打开后会弹出“定位外部参照”；点击“选择文件位置”并选中对应的 DWG 或 DXF，程序会自动重载主图。</li>
+          <li>已选择的参照路径按原图分别保存。再次打开同一主图时会自动读取，无需重复定位；参照文件移动或损坏后，会再次提示。</li>
+          <li>外部参照会加载到主图、模型和布局各自应有的位置，不会作为独立图纸标签打开。</li>
         </ul>
         <h3>常用快捷键</h3>
         <table>

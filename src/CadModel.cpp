@@ -384,6 +384,8 @@ private:
         }
         entity.center = transform.map(entity.center);
         entity.textPosition = transform.map(entity.textPosition);
+        entity.textAlignmentPoint =
+            transform.map(entity.textAlignmentPoint);
         entity.radius *= uniformScale;
         entity.textHeight *= uniformScale;
         if (scaleX > 1.0e-12) {
@@ -1099,10 +1101,129 @@ const QVector<QLineF> &CadEntity::segments() const
     return segmentCache;
 }
 
+QRectF cadInitialViewBounds(const QVector<CadEntity> &entities,
+                           const QRectF &drawingBounds)
+{
+    // This is only a camera hint. The complete drawing bounds remain intact
+    // so show-all continues to include every renderable entity.
+    const QRectF fullBounds = drawingBounds.normalized();
+    constexpr int gridSize = 32;
+    constexpr int minimumEntityCount = 64;
+    constexpr int cellCount = gridSize * gridSize;
+    if (!fullBounds.isValid() || fullBounds.width() <= 0.0
+        || fullBounds.height() <= 0.0
+        || entities.size() < minimumEntityCount) {
+        return fullBounds;
+    }
+
+    QVector<quint32> cellCounts(cellCount, 0);
+    int validEntityCount = 0;
+    for (const CadEntity &entity : entities) {
+        if (!entity.bounds.isValid()) {
+            continue;
+        }
+        const QPointF center = entity.bounds.center();
+        if (!std::isfinite(center.x()) || !std::isfinite(center.y())) {
+            continue;
+        }
+        if (!fullBounds.contains(center)) {
+            continue;
+        }
+        const int column = qBound(
+            0, int(qBound(0.0,
+                          (center.x() - fullBounds.left())
+                              / fullBounds.width(),
+                          1.0)
+                       * gridSize),
+            gridSize - 1);
+        const int row = qBound(
+            0, int(qBound(0.0,
+                          (center.y() - fullBounds.top())
+                              / fullBounds.height(),
+                          1.0)
+                       * gridSize),
+            gridSize - 1);
+        ++cellCounts[row * gridSize + column];
+        ++validEntityCount;
+    }
+    if (validEntityCount < minimumEntityCount) {
+        return fullBounds;
+    }
+
+    QVector<quint8> visited(cellCount, 0);
+    qint64 bestCount = 0;
+    int bestMinimumColumn = 0;
+    int bestMaximumColumn = 0;
+    int bestMinimumRow = 0;
+    int bestMaximumRow = 0;
+    static constexpr int neighborOffsets[8][2] = {
+        {-1, -1}, {0, -1}, {1, -1}, {-1, 0},
+        {1, 0}, {-1, 1}, {0, 1}, {1, 1}
+    };
+    for (int start = 0; start < cellCount; ++start) {
+        if (cellCounts[start] == 0 || visited[start]) {
+            continue;
+        }
+        QVector<int> pending = {start};
+        visited[start] = 1;
+        qint64 componentCount = 0;
+        int minimumColumn = gridSize;
+        int maximumColumn = -1;
+        int minimumRow = gridSize;
+        int maximumRow = -1;
+        for (qsizetype index = 0; index < pending.size(); ++index) {
+            const int cell = pending[index];
+            const int column = cell % gridSize;
+            const int row = cell / gridSize;
+            componentCount += cellCounts[cell];
+            minimumColumn = qMin(minimumColumn, column);
+            maximumColumn = qMax(maximumColumn, column);
+            minimumRow = qMin(minimumRow, row);
+            maximumRow = qMax(maximumRow, row);
+            for (const auto &offset : neighborOffsets) {
+                const int nextColumn = column + offset[0];
+                const int nextRow = row + offset[1];
+                if (nextColumn < 0 || nextColumn >= gridSize
+                    || nextRow < 0 || nextRow >= gridSize) {
+                    continue;
+                }
+                const int next = nextRow * gridSize + nextColumn;
+                if (!visited[next] && cellCounts[next] > 0) {
+                    visited[next] = 1;
+                    pending.append(next);
+                }
+            }
+        }
+        if (componentCount > bestCount) {
+            bestCount = componentCount;
+            bestMinimumColumn = minimumColumn;
+            bestMaximumColumn = maximumColumn;
+            bestMinimumRow = minimumRow;
+            bestMaximumRow = maximumRow;
+        }
+    }
+    if (bestCount <= 0) {
+        return fullBounds;
+    }
+
+    const double cellWidth = fullBounds.width() / gridSize;
+    const double cellHeight = fullBounds.height() / gridSize;
+    QRectF focusBounds(
+        fullBounds.left() + bestMinimumColumn * cellWidth,
+        fullBounds.top() + bestMinimumRow * cellHeight,
+        (bestMaximumColumn - bestMinimumColumn + 1) * cellWidth,
+        (bestMaximumRow - bestMinimumRow + 1) * cellHeight);
+    const double horizontalMargin = focusBounds.width() * 0.06;
+    const double verticalMargin = focusBounds.height() * 0.06;
+    focusBounds.adjust(-horizontalMargin, -verticalMargin,
+                       horizontalMargin, verticalMargin);
+    return focusBounds.intersected(fullBounds);
+}
+
 namespace {
 
 constexpr quint32 kParsedCacheMagic = 0x4341444cU;
-constexpr quint32 kParsedCacheVersion = 5;
+constexpr quint32 kParsedCacheVersion = 8;
 
 QDataStream &operator<<(QDataStream &stream,
                         const CadDimensionEdge &edge);
@@ -1118,6 +1239,10 @@ QDataStream &operator<<(QDataStream &stream,
                         const CadViewportDefinition &viewport);
 QDataStream &operator>>(QDataStream &stream,
                         CadViewportDefinition &viewport);
+QDataStream &operator<<(QDataStream &stream,
+                        const CadExternalReference &reference);
+QDataStream &operator>>(QDataStream &stream,
+                        CadExternalReference &reference);
 
 template <typename T>
 void writeVector(QDataStream &stream, const QVector<T> &values)
@@ -1373,6 +1498,24 @@ QDataStream &operator>>(QDataStream &stream,
     return stream;
 }
 
+QDataStream &operator<<(QDataStream &stream,
+                        const CadExternalReference &reference)
+{
+    stream << reference.name << reference.savedPath
+           << reference.resolvedPath << reference.fileFound
+           << reference.loaded;
+    return stream;
+}
+
+QDataStream &operator>>(QDataStream &stream,
+                        CadExternalReference &reference)
+{
+    stream >> reference.name >> reference.savedPath
+        >> reference.resolvedPath >> reference.fileFound
+        >> reference.loaded;
+    return stream;
+}
+
 void writeParsedDocumentCache(const CadDocument &document)
 {
     const QString cachePath = parsedCachePath(document.path);
@@ -1393,6 +1536,7 @@ void writeParsedDocumentCache(const CadDocument &document)
     writeStringVectorMap(stream, document.layoutEntities);
     writeStringVectorMap(stream, document.layoutViewports);
     writeStringMap(stream, document.layoutBounds);
+    writeVector(stream, document.externalReferences);
     stream << document.computedBounds
            << document.declaredBounds << document.bounds
            << document.savedViewCenter << document.savedViewHeight
@@ -1436,7 +1580,8 @@ bool readParsedDocumentCache(const QString &drawingPath,
         || !readVector(stream, cached.layouts)
         || !readStringVectorMap(stream, cached.layoutEntities)
         || !readStringVectorMap(stream, cached.layoutViewports)
-        || !readStringMap(stream, cached.layoutBounds)) {
+        || !readStringMap(stream, cached.layoutBounds)
+        || !readVector(stream, cached.externalReferences)) {
         return false;
     }
     stream >> cached.computedBounds
@@ -1564,7 +1709,8 @@ void CadDocument::sanitizeRenderableEntities()
     recountLayers();
 }
 
-bool CadDocument::load(const QString &filePath, QString *errorMessage)
+bool CadDocument::load(const QString &filePath, QString *errorMessage,
+                       const QHash<QString, QString> &externalReferencePaths)
 {
     QElapsedTimer timer;
     timer.start();
@@ -1618,6 +1764,7 @@ bool CadDocument::load(const QString &filePath, QString *errorMessage)
     if (suffix == QStringLiteral("dwg")
         && !qEnvironmentVariableIsSet("CADLENS_FORCE_LIBDXFRW")
         && !qEnvironmentVariableIsSet("CADLENS_DISABLE_PARSE_CACHE")
+        && externalReferencePaths.isEmpty()
         && readParsedDocumentCache(filePath, *this)) {
         loadMilliseconds = timer.elapsed();
         if (qEnvironmentVariableIsSet("CADLENS_VERBOSE_DWG")) {
@@ -1630,8 +1777,10 @@ bool CadDocument::load(const QString &filePath, QString *errorMessage)
     if (suffix == QStringLiteral("dwg")
         && !qEnvironmentVariableIsSet("CADLENS_FORCE_LIBDXFRW")) {
         QString libreError;
-        if (loadDwgWithLibreDwg(filePath, *this, &libreError)) {
-            if (!qEnvironmentVariableIsSet(
+        if (loadDwgWithLibreDwg(filePath, *this, &libreError,
+                                externalReferencePaths)) {
+            if (externalReferencePaths.isEmpty()
+                && !qEnvironmentVariableIsSet(
                     "CADLENS_DISABLE_PARSE_CACHE")) {
                 writeParsedDocumentCache(*this);
             }

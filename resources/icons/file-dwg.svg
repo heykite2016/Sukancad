@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="90" y1="60" x2="920" y2="980" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#123b35"/>
+      <stop offset="0.56" stop-color="#09261f"/>
+      <stop offset="1" stop-color="#06140f"/>
+    </linearGradient>
+    <linearGradient id="paper" x1="244" y1="150" x2="805" y2="865" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#e6f3ec"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="238" y1="780" x2="793" y2="850" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1bb673"/>
+      <stop offset="1" stop-color="#85edba"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="22" stdDeviation="26" flood-color="#000000" flood-opacity="0.42"/>
+    </filter>
+    <clipPath id="sheet"><path d="M242 125H658L805 272V867H242Z" rx="56"/></clipPath>
+  </defs>
+  <rect x="54" y="54" width="916" height="916" rx="208" fill="url(#bg)"/>
+  <rect x="71" y="71" width="882" height="882" rx="191" fill="none" stroke="#8ff0c3" stroke-width="5" opacity="0.3"/>
+  <path d="M242 125H658L805 272V867H242Z" rx="56" fill="#02140d" opacity="0.55" filter="url(#shadow)"/>
+  <path d="M226 111H642L789 258V853H226Z" rx="56" fill="url(#paper)"/>
+  <path d="M642 111V258H789Z" fill="#b9dfcc"/>
+  <g clip-path="url(#sheet)">
+    <path d="M226 340H789M226 626H789M405 111V853M615 111V853"
+          stroke="#2f7560" stroke-width="4" opacity="0.13"/>
+  </g>
+  <g fill="none" stroke="#175c49" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M307 305H464V414H571V559H694V682" stroke-width="20" opacity="0.72"/>
+    <circle cx="464" cy="414" r="15" fill="#175c49" stroke="none"/>
+    <circle cx="571" cy="559" r="15" fill="#175c49" stroke="none"/>
+    <path d="M310 682H505M681 682H744" stroke-width="14"/>
+    <path d="M310 653V711M744 653V711" stroke-width="12"/>
+    <path d="M340 682L372 657V707ZM714 682L682 657V707Z" fill="#175c49" stroke="none"/>
+  </g>
+  <rect x="292" y="752" width="432" height="88" rx="24" fill="url(#accent)"/>
+  <text x="508" y="814" text-anchor="middle" fill="#052218"
+        font-family="Arial, Helvetica, sans-serif" font-size="60" font-weight="800"
+        letter-spacing="8">DWG</text>
+  <circle cx="828" cy="202" r="44" fill="#0b3025" stroke="#a8f3d2" stroke-width="7"/>
+  <path d="M828 181V223M807 202H849" stroke="#a8f3d2" stroke-width="10" stroke-linecap="round"/>
+</svg>

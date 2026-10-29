@@ -31,6 +31,7 @@ struct DrawingLoadResult {
     std::shared_ptr<CadDocument> document;
     std::shared_ptr<SpatialIndex> modelIndex;
     QHash<QString, QVector<CadEntity>> layoutContents;
+    QHash<QString, QString> externalReferencePaths;
     QImage thumbnail;
     QString error;
 };
@@ -71,6 +72,9 @@ private:
     void setDrawingActionsEnabled(bool enabled);
     void dockMeasureToolbar(Qt::ToolBarArea area);
     void finishDrawingLoad();
+    void openDrawingWithExternalReferences(
+        const QString &path,
+        const QHash<QString, QString> &externalReferencePaths);
     void wireViewSignals(CadView *view);
     void activateDocument(int index);
     void closeDocumentTab(int index);
@@ -97,6 +101,7 @@ private:
     void requestTextAnnotation(const QPointF &position);
     void requestCalibration(double rawLength);
     void showAnnotationSettings();
+    void showFileAssociationSettings();
     void showHelp();
     void showAbout();
     void beginFixedDistance();
@@ -156,6 +161,7 @@ private:
     QAction *m_deleteAllAction = nullptr;
     QAction *m_annotationVisibilityAction = nullptr;
     QAction *m_annotationSettingsAction = nullptr;
+    QAction *m_fileAssociationAction = nullptr;
     QAction *m_layerPanelAction = nullptr;
     QAction *m_annotationManagerAction = nullptr;
     QAction *m_measureToolbarAction = nullptr;

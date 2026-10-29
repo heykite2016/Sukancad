@@ -53,6 +53,8 @@
     <file>icons/annotations.svg</file>
     <file>icons/print.svg</file>
     <file>icons/pdf.svg</file>
+    <file>icons/file-dwg.svg</file>
+    <file>icons/file-dxf.svg</file>
     <file>images/wechat-donation.png</file>
     <file>demo/site-plan.dwg</file>
     <file>fonts/osifont-lgpl3fe.ttf</file>

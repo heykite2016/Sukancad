@@ -2,7 +2,10 @@
 
 #include <QApplication>
 #include <QCommandLineParser>
+#include <QEvent>
+#include <QElapsedTimer>
 #include <QFile>
+#include <QFileOpenEvent>
 #include <QFontDatabase>
 #include <QIcon>
 #include <QStandardPaths>
@@ -11,6 +14,31 @@
 #include <QTimer>
 
 #include <algorithm>
+#include <utility>
+
+class CadLensApplication : public QApplication {
+    Q_OBJECT
+
+public:
+    using QApplication::QApplication;
+
+signals:
+    void fileOpenRequested(const QString &path);
+
+protected:
+    bool event(QEvent *event) override
+    {
+        if (event->type() == QEvent::FileOpen) {
+            auto *fileEvent = static_cast<QFileOpenEvent *>(event);
+            const QString path = fileEvent->file();
+            if (!path.isEmpty()) {
+                emit fileOpenRequested(path);
+            }
+            return true;
+        }
+        return QApplication::event(event);
+    }
+};
 
 int main(int argc, char *argv[])
 {
@@ -25,7 +53,7 @@ int main(int argc, char *argv[])
     format.setSwapInterval(1);
     QSurfaceFormat::setDefaultFormat(format);
 
-    QApplication application(argc, argv);
+    CadLensApplication application(argc, argv);
     const int technicalFontId =
         QFontDatabase::addApplicationFont(
             QStringLiteral(":/fonts/osifont-lgpl3fe.ttf"));
@@ -128,7 +156,16 @@ int main(int argc, char *argv[])
                        << entity.bounds.bottom() << '|'
                        << entity.points.size() << '|'
                        << entity.closed << '|' << entity.filled << '|'
-                       << entity.text;
+                       << entity.text << '|' << entity.textHeight << '|'
+                       << entity.textWidthScale << '|'
+                       << entity.textRotation << '|' << entity.textFit
+                       << '|' << entity.textHAlign << '|'
+                       << entity.textVAlign << '|'
+                       << entity.textAttachment << '|'
+                       << entity.textPosition.x() << '|'
+                       << entity.textPosition.y() << '|'
+                       << entity.textAlignmentPoint.x() << '|'
+                       << entity.textAlignmentPoint.y();
                 if (dumpPoints) {
                     output << '|';
                     for (qsizetype i = 0; i < entity.points.size(); ++i) {
@@ -243,6 +280,14 @@ int main(int argc, char *argv[])
                        << '|' << viewport.frozenLayers.size() << '\n';
             }
         }
+        for (const CadExternalReference &reference :
+             document.externalReferences) {
+            output << "externalReference=" << reference.name << '|'
+                   << reference.savedPath << '|'
+                   << reference.resolvedPath << '|'
+                   << reference.fileFound << '|'
+                   << reference.loaded << '\n';
+        }
         for (const CadLayer &layer : document.layers) {
             QRectF layerBounds;
             int count = 0;
@@ -269,7 +314,31 @@ int main(int argc, char *argv[])
     }
 
     MainWindow window;
+    bool windowReady = false;
+    QStringList pendingFiles;
+    const auto openFile = [&window, &windowReady,
+                           &pendingFiles](const QString &path) {
+        if (path.isEmpty()) {
+            return;
+        }
+        if (!windowReady) {
+            if (!pendingFiles.contains(path)) {
+                pendingFiles.append(path);
+            }
+            return;
+        }
+        QTimer::singleShot(0, &window, [&window, path] {
+            window.openDrawing(path);
+        });
+    };
+    QObject::connect(&application, &CadLensApplication::fileOpenRequested,
+                     &window, openFile);
+    windowReady = true;
     window.show();
+    for (const QString &path : std::as_const(pendingFiles)) {
+        window.openDrawing(path);
+    }
+    pendingFiles.clear();
     if (!parser.positionalArguments().isEmpty()) {
         window.openDrawing(parser.positionalArguments().first());
     } else if (parser.isSet(snapshotOption)) {
@@ -305,11 +374,25 @@ int main(int argc, char *argv[])
                 rectangle[0].toDouble(), rectangle[1].toDouble(),
                 rectangle[2].toDouble(), rectangle[3].toDouble());
         }
-        QTimer::singleShot(5000, &application,
-                           [&application, &window, snapshotPath,
-                            snapshotSpace, snapshotLayer, snapshotSize,
-                            snapshotRect] {
+        QElapsedTimer snapshotWait;
+        snapshotWait.start();
+        auto *snapshotTimer = new QTimer(&application);
+        snapshotTimer->setInterval(250);
+        QObject::connect(snapshotTimer, &QTimer::timeout, &application, [&] {
             CadView *view = window.findChild<CadView *>();
+            if (!view || !view->document()) {
+                if (snapshotWait.elapsed() < 60000) {
+                    return;
+                } else {
+                    snapshotTimer->stop();
+                    QTextStream(stderr)
+                        << "snapshot-failed=" << snapshotPath
+                        << " (drawing load timeout)\n";
+                    application.exit(1);
+                }
+                return;
+            }
+            snapshotTimer->stop();
             if (view && !snapshotSpace.isEmpty()) {
                 view->setActiveSpace(snapshotSpace);
             }
@@ -330,6 +413,9 @@ int main(int argc, char *argv[])
                 << snapshotPath << '\n';
             application.exit(saved ? 0 : 1);
         });
+        snapshotTimer->start();
     }
     return application.exec();
 }
+
+#include "main.moc"

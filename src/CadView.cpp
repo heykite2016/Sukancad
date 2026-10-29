@@ -655,12 +655,16 @@ void CadView::setDocument(
             m_spatialIndex.rebuild(*m_document);
         }
         m_snapEngine.setDocument(m_document.get(), &m_spatialIndex);
-        m_center = m_document->bounds.center();
+        const QRectF initialBounds = m_document->isPdf()
+            ? m_document->bounds
+            : cadInitialViewBounds(m_document->entities,
+                                   m_document->bounds);
+        m_center = initialBounds.center();
         m_scale = 1.0;
         m_initialFitPending = true;
         QTimer::singleShot(20, this, [this] {
             if (m_initialFitPending && m_document) {
-                fitToDrawing();
+                fitToInitialView();
             }
         });
     } else {
@@ -990,27 +994,45 @@ void CadView::clearDraft()
 
 void CadView::fitToDrawing()
 {
-    if (!m_document || !m_document->bounds.isValid()) {
+    if (!m_document) {
+        return;
+    }
+    fitToBounds(m_document->bounds);
+}
+
+void CadView::fitToInitialView()
+{
+    if (!m_document) {
+        return;
+    }
+    fitToBounds(m_document->isPdf()
+                    ? m_document->bounds
+                    : cadInitialViewBounds(m_document->entities,
+                                           m_document->bounds));
+}
+
+void CadView::fitToBounds(const QRectF &bounds)
+{
+    if (!m_document || !bounds.isValid()) {
         return;
     }
     const double availableWidth = qMax(1.0, width() * 0.92);
     const double availableHeight = qMax(1.0, height() * 0.92);
     const double xScale = availableWidth
-        / qMax(1.0e-9, m_document->bounds.width());
+        / qMax(1.0e-9, bounds.width());
     const double yScale = availableHeight
-        / qMax(1.0e-9, m_document->bounds.height());
+        / qMax(1.0e-9, bounds.height());
     m_scale = qMax(1.0e-12, qMin(xScale, yScale));
     m_fitScale = m_scale;
-    m_center = m_document->bounds.center();
+    m_center = bounds.center();
     m_initialFitPending = false;
     invalidateSceneCache();
     if (qEnvironmentVariableIsSet("CADLENS_VERBOSE_RENDER")) {
         std::fprintf(stderr,
                      "fit bounds=(%.3f,%.3f,%.3f,%.3f) viewport=%dx%d "
                      "scale=%.9g center=(%.3f,%.3f)\n",
-                     m_document->bounds.left(), m_document->bounds.top(),
-                     m_document->bounds.right(),
-                     m_document->bounds.bottom(), width(), height(), m_scale,
+                     bounds.left(), bounds.top(), bounds.right(),
+                     bounds.bottom(), width(), height(), m_scale,
                      m_center.x(), m_center.y());
     }
     emit viewTransformChanged();
@@ -1434,7 +1456,7 @@ void CadView::resizeGL(int width, int height)
     if (m_initialFitPending && m_document) {
         QTimer::singleShot(20, this, [this] {
             if (m_initialFitPending && m_document) {
-                fitToDrawing();
+                fitToInitialView();
             }
         });
     } else {
@@ -4513,6 +4535,8 @@ QVector<CadEntity> CadView::composeLayoutContent(
             }
             entity.center = mapPoint(entity.center);
             entity.textPosition = mapPoint(entity.textPosition);
+            entity.textAlignmentPoint =
+                mapPoint(entity.textAlignmentPoint);
             entity.radius *= viewScale;
             entity.textHeight *= viewScale;
             entity.textRotation +=

@@ -58,7 +58,7 @@ private:
     QString m_darkStyleSheet;
     int m_columnCount = 0;
     bool m_darkTheme = true;
-    bool m_motionEnabled = true;
+    bool m_motionEnabled = false;
 };
 
 #endif

@@ -131,6 +131,40 @@ int main(int argc, char *argv[])
         std::fprintf(stderr, "dark-canvas color contrast failed\n");
         return 8;
     }
+    CadDocument clusteredDocument;
+    clusteredDocument.bounds = QRectF(0.0, 0.0, 10000.0, 4000.0);
+    CadLayer clusteredLayer;
+    clusteredLayer.name = QStringLiteral("DENSE");
+    clusteredDocument.layers.append(clusteredLayer);
+    const auto addClusterLine = [&clusteredDocument, &clusteredLayer](
+                                    const QPointF &position) {
+        CadEntity line;
+        line.layer = clusteredLayer.name;
+        line.type = CadEntityType::Segment;
+        line.points = {position, position + QPointF(40.0, 0.0)};
+        line.updateBounds();
+        clusteredDocument.entities.append(line);
+    };
+    for (int row = 0; row < 20; ++row) {
+        for (int column = 0; column < 20; ++column) {
+            addClusterLine(QPointF(1000.0 + column * 75.0,
+                                   1000.0 + row * 100.0));
+        }
+    }
+    for (int index = 0; index < 20; ++index) {
+        addClusterLine(QPointF(8000.0 + index * 25.0,
+                               1800.0 + (index % 4) * 80.0));
+    }
+    const QRectF fullClusterBounds = clusteredDocument.bounds;
+    const QRectF initialClusterBounds = cadInitialViewBounds(
+        clusteredDocument.entities, clusteredDocument.bounds);
+    if (!initialClusterBounds.contains(QPointF(2000.0, 2000.0))
+        || initialClusterBounds.right() >= 7000.0
+        || initialClusterBounds.width() >= fullClusterBounds.width()
+        || clusteredDocument.bounds != fullClusterBounds) {
+        std::fprintf(stderr, "dense initial view bounds were not isolated\n");
+        return 9;
+    }
     std::puts("cad_document_tests passed");
     return 0;
 }

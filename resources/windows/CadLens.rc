@@ -1,2 +1,4 @@
 1 ICON "CadLens.ico"
+2 ICON "CadLensDWG.ico"
+3 ICON "CadLensDXF.ico"
 1 24 "CadLens.manifest"

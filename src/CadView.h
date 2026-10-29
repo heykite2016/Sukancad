@@ -279,6 +279,8 @@ private:
     bool antialiasingEnabled() const;
     qreal renderCachePixelRatio() const;
     void requestRenderFrame();
+    void fitToInitialView();
+    void fitToBounds(const QRectF &bounds);
 
     std::shared_ptr<CadDocument> m_document;
     SpatialIndex m_spatialIndex;

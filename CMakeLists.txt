@@ -127,6 +127,8 @@ add_executable(CadLens MACOSX_BUNDLE
     src/main.cpp
     src/MainWindow.cpp
     src/MainWindow.h
+    src/FileAssociation.cpp
+    src/FileAssociation.h
     src/StartScreen.cpp
     src/StartScreen.h
     src/CadView.cpp
@@ -142,8 +144,24 @@ target_link_libraries(CadLens PRIVATE
     Qt6::Concurrent
     Qt6::PrintSupport
 )
+if(APPLE)
+    target_link_libraries(CadLens PRIVATE
+        "-framework CoreFoundation"
+        "-framework CoreServices"
+    )
+    target_sources(CadLens PRIVATE
+        resources/macos/CadLensDWG.icns
+        resources/macos/CadLensDXF.icns
+    )
+    set_source_files_properties(
+        resources/macos/CadLensDWG.icns
+        resources/macos/CadLensDXF.icns
+        PROPERTIES MACOSX_PACKAGE_LOCATION Resources
+    )
+endif()
 if(WIN32)
     target_sources(CadLens PRIVATE resources/windows/CadLens.rc)
+    target_link_libraries(CadLens PRIVATE shell32 shlwapi ole32)
     set_target_properties(CadLens PROPERTIES WIN32_EXECUTABLE TRUE)
 endif()
 target_compile_options(CadLens PRIVATE
@@ -174,6 +192,8 @@ endforeach()
 set_target_properties(CadLens PROPERTIES
     MACOSX_BUNDLE_BUNDLE_NAME "速看CAD"
     MACOSX_BUNDLE_GUI_IDENTIFIER "com.cadlens.desktop"
+    MACOSX_BUNDLE_INFO_PLIST
+        "${CMAKE_CURRENT_SOURCE_DIR}/resources/macos/Info.plist.in"
     MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
     MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
     OUTPUT_NAME "CadLens"

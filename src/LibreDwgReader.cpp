@@ -5,6 +5,7 @@
 
 #include <QFile>
 #include <QFileInfo>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QHash>
 #include <QRegularExpression>
@@ -415,8 +416,10 @@ QString versionName(Dwg_Version_Type version)
 
 class LibreBuilder {
 public:
-    LibreBuilder(Dwg_Data &dwg, CadDocument &document)
-        : m_dwg(dwg), m_document(document)
+    LibreBuilder(Dwg_Data &dwg, CadDocument &document,
+                 const QHash<QString, QString> &externalReferencePaths)
+        : m_dwg(dwg), m_document(document),
+          m_externalReferencePaths(externalReferencePaths)
     {
     }
 
@@ -428,6 +431,7 @@ public:
         m_document.fileName = QFileInfo(m_path).fileName();
         m_document.sourceFormat = QStringLiteral("DWG");
         m_document.sourceBackend = QStringLiteral("LibreDWG");
+        readExternalReferences();
         m_document.formatVersion = versionName(m_dwg.header.version);
         m_document.sourceUnit =
             measuringUnitFromInsUnits(m_dwg.header_vars.INSUNITS);
@@ -537,7 +541,7 @@ public:
         m_document.sanitizeRenderableEntities();
         m_target = &m_document.entities;
         m_document.computedBounds =
-            robustBounds(m_document.entities);
+            completeBounds(m_document.entities);
         m_document.renderedAttributeVisits =
             int(qMin<quint64>(
                 m_attributeRenderedVisits,
@@ -605,6 +609,138 @@ public:
             std::fprintf(stderr, "\n");
         }
         return !m_document.entities.isEmpty();
+    }
+
+    void readExternalReferences()
+    {
+        Dwg_Object_BLOCK_CONTROL *control = dwg_block_control(&m_dwg);
+        if (!control || !control->entries) {
+            return;
+        }
+        for (BITCODE_BL i = 0; i < control->num_entries; ++i) {
+            int referenceError = 0;
+            Dwg_Object *object = control->entries[i]
+                ? dwg_ref_get_object(control->entries[i],
+                                     &referenceError)
+                : nullptr;
+            if (!object || referenceError) {
+                continue;
+            }
+            auto *block = dwg_object_to_BLOCK_HEADER(object);
+            if (!block || !block->blkisxref) {
+                continue;
+            }
+            CadExternalReference reference;
+            reference.name = decodedDwgText(block->name).trimmed();
+            reference.savedPath =
+                decodedDwgText(block->xref_pname).trimmed();
+            reference.resolvedPath = selectedExternalReferencePath(reference);
+            if (reference.resolvedPath.isEmpty()) {
+                reference.resolvedPath =
+                    resolveExternalReferencePath(reference.savedPath);
+            }
+            reference.fileFound = !reference.resolvedPath.isEmpty();
+            if (reference.name.isEmpty()) {
+                reference.name = QFileInfo(reference.resolvedPath).fileName();
+            }
+            if (reference.fileFound) {
+                bool loaded = false;
+                const QVector<CadEntity> contents =
+                    loadExternalReferenceEntities(
+                        reference.resolvedPath, &loaded,
+                        m_externalReferencePaths);
+                if (loaded) {
+                    m_externalReferenceBlocks.insert(
+                        reference.resolvedPath, contents);
+                    reference.loaded = true;
+                }
+            }
+            m_document.externalReferences.append(std::move(reference));
+        }
+    }
+
+    QString decodedDwgText(const char *value) const
+    {
+        if (!value) {
+            return {};
+        }
+        if (m_dwg.header.version < R_2007) {
+            return QString::fromLocal8Bit(value);
+        }
+        const auto *units = reinterpret_cast<const char16_t *>(value);
+        qsizetype length = 0;
+        while (length < 4096 && units[length] != 0) {
+            ++length;
+        }
+        return QString::fromUtf16(units, int(length));
+    }
+
+    QString resolveExternalReferencePath(const QString &savedPath) const
+    {
+        QString normalizedPath = savedPath.trimmed();
+        normalizedPath.replace(QLatin1Char('\\'), QLatin1Char('/'));
+        while (normalizedPath.startsWith(QStringLiteral("./"))) {
+            normalizedPath.remove(0, 2);
+        }
+        const QFileInfo savedInfo(normalizedPath);
+        if (savedInfo.isAbsolute() && savedInfo.isFile()) {
+            return savedInfo.absoluteFilePath();
+        }
+        if (savedInfo.fileName().isEmpty()) {
+            return {};
+        }
+        const QFileInfo adjacent(
+            QFileInfo(m_path).absoluteDir().filePath(savedInfo.fileName()));
+        return adjacent.isFile() ? adjacent.absoluteFilePath() : QString();
+    }
+
+    QString selectedExternalReferencePath(
+        const CadExternalReference &reference) const
+    {
+        const QStringList keys = {
+            reference.name,
+            reference.savedPath,
+            QFileInfo(reference.savedPath).fileName()
+        };
+        for (const QString &key : keys) {
+            if (key.isEmpty()) {
+                continue;
+            }
+            const QFileInfo selected(m_externalReferencePaths.value(key));
+            if (selected.isFile()) {
+                return selected.absoluteFilePath();
+            }
+        }
+        return {};
+    }
+
+    QVector<CadEntity> loadExternalReferenceEntities(
+        const QString &path, bool *loaded,
+        const QHash<QString, QString> &externalReferencePaths) const
+    {
+        if (loaded) {
+            *loaded = false;
+        }
+        const QFileInfo info(path);
+        const QString key = info.canonicalFilePath().isEmpty()
+            ? info.absoluteFilePath() : info.canonicalFilePath();
+        static thread_local QSet<QString> loadingReferences;
+        if (key.isEmpty() || loadingReferences.contains(key)) {
+            return {};
+        }
+        loadingReferences.insert(key);
+        CadDocument referenced;
+        QString error;
+        const bool success = referenced.load(
+            key, &error, externalReferencePaths);
+        loadingReferences.remove(key);
+        if (!success) {
+            return {};
+        }
+        if (loaded) {
+            *loaded = true;
+        }
+        return referenced.entities;
     }
 
     void setPath(const QString &path) { m_path = path; }
@@ -883,6 +1019,46 @@ private:
         m_maxDepth = qMax(m_maxDepth, depth);
         Dwg_Object_BLOCK_HEADER *block =
             dwg_object_to_BLOCK_HEADER(headerObject);
+        if (block && block->blkisxref) {
+            CadExternalReference reference;
+            reference.name = decodedDwgText(block->name).trimmed();
+            reference.savedPath =
+                decodedDwgText(block->xref_pname).trimmed();
+            if (qEnvironmentVariableIsSet("CADLENS_VERBOSE_DWG")) {
+                std::fprintf(
+                    stderr,
+                    "xref-header handle=%llu name=%s path=%s base=(%.6f,%.6f,%.6f) "
+                    "loaded=%d owned=%lld inserts=%u units=%d\n",
+                    static_cast<unsigned long long>(headerObject->handle.value),
+                    reference.name.toUtf8().constData(),
+                    reference.savedPath.toUtf8().constData(),
+                    static_cast<double>(block->base_pt.x),
+                    static_cast<double>(block->base_pt.y),
+                    static_cast<double>(block->base_pt.z),
+                    int(block->xref_loaded),
+                    static_cast<long long>(block->num_owned),
+                    unsigned(block->num_inserts),
+                    int(block->insert_units));
+            }
+            QString referencePath =
+                selectedExternalReferencePath(reference);
+            if (referencePath.isEmpty()) {
+                referencePath =
+                    resolveExternalReferencePath(reference.savedPath);
+            }
+            const auto referenced =
+                m_externalReferenceBlocks.constFind(referencePath);
+            if (referenced != m_externalReferenceBlocks.cend()) {
+                for (CadEntity entity : referenced.value()) {
+                    if (entity.layer == QStringLiteral("0")
+                        && !insertLayer.isEmpty()) {
+                        entity.layer = insertLayer;
+                    }
+                    append(std::move(entity), outer);
+                }
+            }
+            return;
+        }
         if (block && block->entities && block->num_owned > 0) {
             ++m_blockArrayVisits;
             for (BITCODE_BL i = 0; i < block->num_owned; ++i) {
@@ -928,6 +1104,25 @@ private:
         if (!block) {
             ++m_unresolvedInserts;
             return;
+        }
+        if (block->blkisxref
+            && qEnvironmentVariableIsSet("CADLENS_VERBOSE_DWG")) {
+            std::fprintf(
+                stderr,
+                "xref-insert handle=%llu target=%llu point=(%.6f,%.6f,%.6f) "
+                "scale=(%.9g,%.9g,%.9g) rotation=%.9g base=(%.6f,%.6f,%.6f)\n",
+                static_cast<unsigned long long>(object->handle.value),
+                static_cast<unsigned long long>(header->handle.value),
+                static_cast<double>(insert->ins_pt.x),
+                static_cast<double>(insert->ins_pt.y),
+                static_cast<double>(insert->ins_pt.z),
+                static_cast<double>(insert->scale.x),
+                static_cast<double>(insert->scale.y),
+                static_cast<double>(insert->scale.z),
+                static_cast<double>(insert->rotation),
+                static_cast<double>(block->base_pt.x),
+                static_cast<double>(block->base_pt.y),
+                static_cast<double>(block->base_pt.z));
         }
         const double sx = qAbs(insert->scale.x) > 1.0e-12
             ? insert->scale.x : 1.0;
@@ -1928,72 +2123,23 @@ private:
         return bounds;
     }
 
-    static QRectF robustBounds(const QVector<CadEntity> &entities)
+    static QRectF completeBounds(const QVector<CadEntity> &entities)
     {
-        if (entities.size() < 20) {
-            return calculateBounds(entities);
-        }
-        QVector<double> xs;
-        QVector<double> ys;
-        xs.reserve(entities.size());
-        ys.reserve(entities.size());
-        for (const CadEntity &entity : entities) {
-            if (entity.bounds.isValid()) {
-                xs.append(entity.bounds.center().x());
-                ys.append(entity.bounds.center().y());
-            }
-        }
-        if (xs.size() < 20) {
-            return calculateBounds(entities);
-        }
-        std::sort(xs.begin(), xs.end());
-        std::sort(ys.begin(), ys.end());
-        // Some architectural files contain a few stray blocks or long
-        // construction guides far away from the actual plan. Fitting to the
-        // absolute extents makes the plan collapse into a few pixels and can
-        // also push most sub-pixel geometry below the renderer's LOD cutoff.
-        // Use the central 80% as the density estimate, while retaining a
-        // generous margin so nearby dimensions and axis lines stay visible.
-        const int low = xs.size() * 10 / 100;
-        const int high = xs.size() * 90 / 100;
-        const double centralWidth = xs[high] - xs[low];
-        const double centralHeight = ys[high] - ys[low];
-        const double minX = xs[low] - qMax(1.0, centralWidth * 1.5);
-        const double maxX = xs[high] + qMax(1.0, centralWidth * 1.5);
-        const double minY = ys[low] - qMax(1.0, centralHeight * 1.5);
-        const double maxY = ys[high] + qMax(1.0, centralHeight * 1.5);
-        const double maxDimension =
-            qMax(1.0, qMax(centralWidth, centralHeight) * 8.0);
-        QRectF result;
-        for (const CadEntity &entity : entities) {
-            if (!entity.bounds.isValid()) {
-                continue;
-            }
-            const QPointF center = entity.bounds.center();
-            if (center.x() < minX || center.x() > maxX
-                || center.y() < minY || center.y() > maxY
-                || entity.bounds.width() > maxDimension
-                || entity.bounds.height() > maxDimension) {
-                continue;
-            }
-            result = result.isNull() ? entity.bounds
-                                     : result.united(entity.bounds);
-        }
-        if (!result.isValid()) {
-            return calculateBounds(entities);
-        }
-        return result.adjusted(-result.width() * 0.03,
-                               -result.height() * 0.03,
-                               result.width() * 0.03,
-                               result.height() * 0.03);
+        // The view extent must describe every renderable entity. Do not use a
+        // density estimate here: an independent plan may contain only a small
+        // fraction of the total entities, and excluding it from the initial
+        // view makes the drawing appear incomplete even though it was parsed.
+        return calculateBounds(entities);
     }
 
     Dwg_Data &m_dwg;
     CadDocument &m_document;
+    const QHash<QString, QString> &m_externalReferencePaths;
     QString m_path;
     QVector<CadEntity> *m_target = &m_document.entities;
     QHash<uint32_t, int> m_layerHandles;
     QHash<quint64, QVector<Dwg_Object *>> m_attributesByOwner;
+    QHash<QString, QVector<CadEntity>> m_externalReferenceBlocks;
     QHash<int, quint64> m_typeHistogram;
     quint64 m_blocksVisited = 0;
     quint64 m_insertsVisited = 0;
@@ -2017,8 +2163,9 @@ QString cleanDwgTextForDisplay(const QString &text)
     return cleanCadText(text);
 }
 
-bool loadDwgWithLibreDwg(const QString &path, CadDocument &document,
-                         QString *errorMessage)
+bool loadDwgWithLibreDwg(
+    const QString &path, CadDocument &document, QString *errorMessage,
+    const QHash<QString, QString> &externalReferencePaths)
 {
     QElapsedTimer loadTimer;
     loadTimer.start();
@@ -2036,7 +2183,7 @@ bool loadDwgWithLibreDwg(const QString &path, CadDocument &document,
         dwg_free(&dwg);
         return false;
     }
-    LibreBuilder builder(dwg, document);
+    LibreBuilder builder(dwg, document, externalReferencePaths);
     builder.setPath(path);
     QString buildError;
     const bool success = builder.build(&buildError);
