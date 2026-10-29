@@ -13,6 +13,7 @@
   [安装程序](https://github.com/heykite2016/Sukancad/releases/download/v1.0.4/CadLens-1.0.4-windows10-x64-setup.exe)
   · [便携版 ZIP](https://github.com/heykite2016/Sukancad/releases/download/v1.0.4/CadLens-1.0.4-windows10-x64-portable.zip)
 - [查看全部发布文件及源码包](https://github.com/heykite2016/Sukancad/releases/tag/v1.0.4)
+- **国内 Gitee 镜像**：[源码仓库](https://gitee.com/FanieWang/Sukancad) · [发布页与安装包](https://gitee.com/FanieWang/Sukancad/releases/tag/v1.0.4)
 
 macOS 当前采用 ad-hoc 签名，尚未完成 Apple Developer ID 签名及公证。
 
