@@ -27,12 +27,12 @@ RequestExecutionLevel admin
 SetCompressor /SOLID lzma
 SetCompressorDictSize 32
 
-VIProductVersion "1.0.4.0"
+VIProductVersion "1.0.5.0"
 VIAddVersionKey "ProductName" "${APP_NAME}"
-VIAddVersionKey "ProductVersion" "1.0.4"
+VIAddVersionKey "ProductVersion" "1.0.5"
 VIAddVersionKey "CompanyName" "${AUTHOR}"
 VIAddVersionKey "FileDescription" "${APP_NAME} Engineering Drawing Viewer"
-VIAddVersionKey "FileVersion" "1.0.4.0"
+VIAddVersionKey "FileVersion" "1.0.5.0"
 VIAddVersionKey "LegalCopyright" "Copyright ${AUTHOR}"
 
 !define MUI_ABORTWARNING
@@ -66,7 +66,7 @@ Section "${APP_NAME}" SecMain
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CADLens" \
     "DisplayName" "${APP_NAME}"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CADLens" \
-    "DisplayVersion" "1.0.4"
+    "DisplayVersion" "1.0.5"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CADLens" \
     "Publisher" "${AUTHOR}"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CADLens" \

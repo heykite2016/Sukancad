@@ -291,7 +291,7 @@ AnnotationStyleMetrics annotationStyleMetrics(AnnotationStyle style)
         break;
     case AnnotationStyle::Architectural:
         metrics.textSize = 13.0;
-        metrics.arrowSize = 7.0;
+        metrics.arrowSize = 9.0;
         metrics.lineWidth = 1.15;
         metrics.extensionOffset = 4.8;
         metrics.extensionOverrun = 12.5;
@@ -466,14 +466,18 @@ QString Measurement::primaryValue(const CadDocument &document,
         }
         break;
     case MeasurementType::SideArea:
-        return QStringLiteral("总长：%1\n侧面积：%2")
+        // 侧面积 = 选中线段/圆弧总长 × 输入高度
+        return QStringLiteral("侧面积：%1\n总长 %2 × 高 %3")
             .arg(
+                formatAreaValue(
+                    rawArea(), document, settings.areaUnit,
+                    settings.areaPrecision),
                 formatDimensionValue(
                     rawLength(), document, settings.lengthUnit,
                     settings.lengthPrecision),
-                formatAreaValue(
-                    rawArea(), document, settings.areaUnit,
-                    settings.areaPrecision));
+                formatDimensionValue(
+                    auxiliaryValue, document, settings.lengthUnit,
+                    settings.lengthPrecision));
     case MeasurementType::Angle:
         if (points.size() >= 3) {
             return QStringLiteral("∠%1°").arg(

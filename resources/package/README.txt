@@ -1,4 +1,4 @@
-速看CAD 1.0.4
+速看CAD 1.0.5
 ================
 
 Supported systems

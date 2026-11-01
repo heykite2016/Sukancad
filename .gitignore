@@ -7,3 +7,4 @@ CadLensIOS/
 copyright-application/
 *.log
 *.user
+.workbuddy/

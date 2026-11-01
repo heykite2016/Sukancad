@@ -1223,7 +1223,7 @@ QRectF cadInitialViewBounds(const QVector<CadEntity> &entities,
 namespace {
 
 constexpr quint32 kParsedCacheMagic = 0x4341444cU;
-constexpr quint32 kParsedCacheVersion = 8;
+constexpr quint32 kParsedCacheVersion = 11;
 
 QDataStream &operator<<(QDataStream &stream,
                         const CadDimensionEdge &edge);
@@ -1709,6 +1709,66 @@ void CadDocument::sanitizeRenderableEntities()
     recountLayers();
 }
 
+namespace {
+
+// A stale VPORT can survive in the file long after the model moved, so a
+// saved view that does not even touch the computed bounds would open the
+// sheet on an empty region. So would one that only grazes the drawing:
+// real drawings concentrate their entities, so a useful saved view must
+// cover a meaningful share of them. Drop useless views and let the
+// fit-to-drawing path decide.
+void discardStaleSavedView(CadDocument &document)
+{
+    if (!document.hasSavedView || document.savedViewHeight <= 0.0
+        || document.savedViewWidth <= 0.0
+        || !document.bounds.isValid()) {
+        return;
+    }
+    const QRectF view(
+        document.savedViewCenter
+            - QPointF(document.savedViewWidth / 2.0,
+                      document.savedViewHeight / 2.0),
+        QSizeF(document.savedViewWidth, document.savedViewHeight));
+    bool stale = !view.intersects(document.bounds);
+    if (!stale && document.entities.size() >= 64) {
+        // Coverage test: sample entity centers against the saved view.
+        // Editors move content around without refreshing the saved view,
+        // which leaves it pointing at an empty offset region.
+        constexpr int kSampleLimit = 20000;
+        const int stride = qMax(1, document.entities.size()
+                                       / kSampleLimit);
+        qint64 sampled = 0;
+        qint64 covered = 0;
+        for (qsizetype i = 0; i < document.entities.size(); i += stride) {
+            const CadEntity &entity = document.entities[i];
+            if (!entity.bounds.isValid()) {
+                continue;
+            }
+            const QPointF center = entity.bounds.center();
+            if (!std::isfinite(center.x()) || !std::isfinite(center.y())) {
+                continue;
+            }
+            ++sampled;
+            if (view.contains(center)) {
+                ++covered;
+            }
+        }
+        if (sampled >= 16
+            && covered * 4 < sampled) {
+            stale = true;
+        }
+    }
+    if (stale) {
+        document.hasSavedView = false;
+        document.savedViewCenter = QPointF();
+        document.savedViewWidth = 0.0;
+        document.savedViewHeight = 0.0;
+        document.savedViewTwist = 0.0;
+    }
+}
+
+} // namespace
+
 bool CadDocument::load(const QString &filePath, QString *errorMessage,
                        const QHash<QString, QString> &externalReferencePaths)
 {
@@ -1771,7 +1831,10 @@ bool CadDocument::load(const QString &filePath, QString *errorMessage,
             std::fprintf(stderr, "parsed-cache hit %lldms\n",
                          static_cast<long long>(loadMilliseconds));
         }
-        return !entities.isEmpty();
+        // A document whose only entities are POINT/WIPEOUT/VIEWPORT (all
+        // intentionally not drawn) parses fine but yields no drawable
+        // geometry. That is a valid drawing, not a load failure.
+        return true;
     }
 
     if (suffix == QStringLiteral("dwg")
@@ -1782,10 +1845,15 @@ bool CadDocument::load(const QString &filePath, QString *errorMessage,
             if (externalReferencePaths.isEmpty()
                 && !qEnvironmentVariableIsSet(
                     "CADLENS_DISABLE_PARSE_CACHE")) {
+                discardStaleSavedView(*this);
                 writeParsedDocumentCache(*this);
+            } else {
+                discardStaleSavedView(*this);
             }
             loadMilliseconds = timer.elapsed();
-            return !entities.isEmpty();
+            // Same rule as the cache path: a successful decode with no
+            // drawable entities is an empty sheet, not an error.
+            return true;
         }
         // Keep the older direct reader as a compatibility fallback for DWG
         // revisions which the primary backend cannot complete.
@@ -1828,7 +1896,8 @@ bool CadDocument::load(const QString &filePath, QString *errorMessage,
         return false;
     }
     loadMilliseconds = timer.elapsed();
-    return !entities.isEmpty();
+    discardStaleSavedView(*this);
+    return true;
 }
 
 const CadPdfPage *CadDocument::pdfPage(const QString &name) const

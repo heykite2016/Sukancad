@@ -344,8 +344,14 @@ QVector<QPointF> sampleArc(const QPointF &center, double radius,
                              int(std::ceil(qAbs(end - start)
                                            / (kPi / 48.0))),
                              512);
-    result.reserve(count);
-    for (int i = 0; i < count; ++i) {
+    // A closed circle relies on the renderer joining the last sample back to
+    // the first one, so it must not duplicate the start point. An open arc has
+    // no such joining step: its last sample has to land exactly on the end
+    // angle, otherwise every arc loses up to one step of its sweep (about
+    // 3.75 degrees at the default step size) and renders as a broken outline.
+    const int steps = full ? count : count + 1;
+    result.reserve(steps);
+    for (int i = 0; i < steps; ++i) {
         const double angle =
             start + (end - start) * double(i) / double(count);
         result.append(center
@@ -445,7 +451,18 @@ public:
             m_document.sourceUnit = MeasuringUnit::Millimeter;
             m_document.metersPerDrawingUnit = 0.001;
         }
+        const QRectF declaredExtent(
+            QPointF(m_dwg.header_vars.EXTMIN.x,
+                    m_dwg.header_vars.EXTMIN.y),
+            QPointF(m_dwg.header_vars.EXTMAX.x,
+                    m_dwg.header_vars.EXTMAX.y));
+        if (declaredExtent.isValid() && declaredExtent.width() > 0.0
+            && declaredExtent.height() > 0.0) {
+            m_referenceExtent = std::hypot(declaredExtent.width(),
+                                           declaredExtent.height());
+        }
         indexOwnedAttributes();
+        indexSpatialFilters();
         const qint64 attributeMilliseconds = stageTimer.restart();
         readLayers();
         readSavedModelView();
@@ -593,6 +610,12 @@ public:
                              m_insertSwitchVisited),
                          static_cast<unsigned long long>(
                              m_blockArrayVisits));
+            std::fprintf(stderr,
+                         "dimensions resolved=%llu fallbackText=%llu\n",
+                         static_cast<unsigned long long>(
+                             m_dimensionBlocksResolved),
+                         static_cast<unsigned long long>(
+                             m_dimensionFallbackTexts));
             std::fprintf(stderr, "attributes indexed=%lld visited=%llu "
                                  "attMode=%d\n",
                          static_cast<long long>(m_attributesByOwner.size()),
@@ -607,6 +630,22 @@ public:
                                  m_typeHistogram.value(key)));
             }
             std::fprintf(stderr, "\n");
+            QList<int> skippedKeys = m_skippedHistogram.keys();
+            std::sort(skippedKeys.begin(), skippedKeys.end());
+            for (int key : skippedKeys) {
+                std::fprintf(stderr, "skipped[%d]=%llu ", key,
+                             static_cast<unsigned long long>(
+                                 m_skippedHistogram.value(key)));
+            }
+            std::fprintf(stderr, "\n");
+            if (m_skippedPointCount > 0) {
+                std::fprintf(stderr,
+                             "skippedPointCount=%llu min=%f,%f max=%f,%f\n",
+                             static_cast<unsigned long long>(
+                                 m_skippedPointCount),
+                             m_skippedPointMin.x(), m_skippedPointMin.y(),
+                             m_skippedPointMax.x(), m_skippedPointMax.y());
+            }
         }
         return !m_document.entities.isEmpty();
     }
@@ -772,6 +811,88 @@ private:
         }
     }
 
+    // XCLIP: an entity (usually an INSERT) can carry a SPATIAL_FILTER through
+    // its extension dictionary chain
+    // (entity -> dictionary -> dictionary -> SPATIAL_FILTER). Only geometry
+    // inside the filter boundary is displayed; AutoCAD hides the rest. The
+    // boundary is stored in the coordinate space the clip was drawn in (WCS
+    // for model space clips; the filter's own transform is applied when it
+    // is not the identity).
+    void indexSpatialFilters()
+    {
+        m_clipByEntityHandle.clear();
+        for (BITCODE_BL i = 0; i < m_dwg.num_objects; ++i) {
+            Dwg_Object *object = &m_dwg.object[i];
+            if (object->fixedtype != DWG_TYPE_SPATIAL_FILTER
+                || !object->tio.object) {
+                continue;
+            }
+            auto *filter = object->tio.object->tio.SPATIAL_FILTER;
+            if (!filter || filter->num_clip_verts == 0
+                || !filter->clip_verts) {
+                continue;
+            }
+            Dwg_Object *owner = nullptr;
+            if (object->tio.object->ownerhandle) {
+                int ownerError = 0;
+                owner = dwg_ref_get_object(
+                    object->tio.object->ownerhandle, &ownerError);
+            }
+            int guard = 0;
+            while (owner
+                   && owner->fixedtype == DWG_TYPE_DICTIONARY
+                   && guard++ < 8) {
+                if (!owner->tio.object
+                    || !owner->tio.object->ownerhandle) {
+                    owner = nullptr;
+                    break;
+                }
+                int parentError = 0;
+                owner = dwg_ref_get_object(
+                    owner->tio.object->ownerhandle, &parentError);
+                if (parentError) {
+                    owner = nullptr;
+                }
+            }
+            if (!owner || owner->supertype != DWG_SUPERTYPE_ENTITY) {
+                continue;
+            }
+            // The boundary vertices are stored in world coordinates; the
+            // filter's inverse_transform maps world -> the clipped entity's
+            // own (block) coordinate space, where the boundary actually
+            // applies. Mirrored inserts carry the mirror in this matrix, so
+            // skipping it misplaces every clip of a mirrored block.
+            auto toLocal = [&filter](BITCODE_2RD vertex) {
+                if (filter->inverse_transform) {
+                    const double *t = filter->inverse_transform;
+                    return QPointF(
+                        t[0] * vertex.x + t[1] * vertex.y + t[3],
+                        t[4] * vertex.x + t[5] * vertex.y + t[7]);
+                }
+                return QPointF(vertex.x, vertex.y);
+            };
+            QPolygonF polygon;
+            polygon.reserve(int(filter->num_clip_verts) + 1);
+            for (BITCODE_BL k = 0; k < filter->num_clip_verts; ++k) {
+                polygon.append(toLocal(filter->clip_verts[k]));
+            }
+            if (filter->num_clip_verts == 2) {
+                // Opposite rectangle corners -> closed rectangle.
+                const QPointF a = polygon.first();
+                const QPointF b = polygon.last();
+                polygon.clear();
+                polygon << a
+                        << QPointF(b.x(), a.y())
+                        << b
+                        << QPointF(a.x(), b.y())
+                        << a;
+            } else if (polygon.first() != polygon.last()) {
+                polygon.append(polygon.first());
+            }
+            m_clipByEntityHandle.insert(owner->handle.value, polygon);
+        }
+    }
+
     void readSavedModelView()
     {
         Dwg_Object_VPORT *active = nullptr;
@@ -835,6 +956,17 @@ private:
             layer.visible = !source->off && !source->frozen;
             layer.locked = source->locked;
             layer.lineWeight = source->linewt;
+            if (qEnvironmentVariableIsSet("CADLENS_VERBOSE_DWG")
+                && (source->off || source->frozen
+                    || source->frozen_in_new || source->flag0)) {
+                std::fprintf(stderr,
+                             "layerState=%s off=%d frozen=%d "
+                             "frozenInNew=%d flag0=%d\n",
+                             layer.name.toUtf8().constData(),
+                             int(source->off), int(source->frozen),
+                             int(source->frozen_in_new),
+                             int(source->flag0));
+            }
             m_document.layers.append(layer);
             m_layerHandles.insert(object->handle.value,
                                   m_document.layers.size() - 1);
@@ -1083,6 +1215,23 @@ private:
         }
     }
 
+    double dimensionTextHeight(const Dwg_DIMENSION_common *dim) const
+    {
+        if (!dim || !dim->dimstyle) {
+            return 2.5;
+        }
+        int error = 0;
+        Dwg_Object *styleObject =
+            dwg_ref_get_object(dim->dimstyle, &error);
+        Dwg_Object_DIMSTYLE *style =
+            styleObject && !error
+            ? dwg_object_to_DIMSTYLE(styleObject) : nullptr;
+        if (style && style->DIMTXT > 1.0e-9) {
+            return style->DIMTXT * qMax(1.0, style->DIMSCALE);
+        }
+        return 2.5;
+    }
+
     void visitInsert(Dwg_Object *object, Dwg_Entity_INSERT *insert,
                      const Affine &outer, int depth,
                      const QString &insertLayer)
@@ -1141,6 +1290,11 @@ private:
             - local.m22 * block->base_pt.y;
         const int columns = qBound(1, int(insert->num_cols), 256);
         const int rows = qBound(1, int(insert->num_rows), 256);
+        // XCLIP: when the insert carries a SPATIAL_FILTER only geometry
+        // inside the clip boundary is displayed (AutoCAD hides the rest).
+        // The stored polygon is already in this block's local coordinates.
+        const QPolygonF clipPolygon =
+            m_clipByEntityHandle.value(object->handle.value);
         for (int row = 0; row < rows; ++row) {
             for (int column = 0; column < columns; ++column) {
                 const double x = column * insert->col_spacing;
@@ -1151,10 +1305,39 @@ private:
                 const Affine combined =
                     arrayLocal.then(ocsAffine(insert->extrusion))
                         .then(outer);
+                const int cellBegin = m_target->size();
                 const QString blockLayer =
                     commonEntity(object, insertLayer).layer;
                 visitBlockHeader(header, combined, depth + 1,
                                  blockLayer);
+                if (!clipPolygon.isEmpty()) {
+                    // NOTE: QRectF(p, p) has zero width/height, so
+                    // QRectF::isNull() keeps returning true for point
+                    // rectangles — accumulate min/max manually instead of
+                    // united()/isNull().
+                    double minX = 0.0;
+                    double minY = 0.0;
+                    double maxX = 0.0;
+                    double maxY = 0.0;
+                    bool havePoint = false;
+                    for (const QPointF &vertex : clipPolygon) {
+                        const QPointF mapped = combined.map(vertex);
+                        if (!havePoint) {
+                            minX = maxX = mapped.x();
+                            minY = maxY = mapped.y();
+                            havePoint = true;
+                        } else {
+                            minX = qMin(minX, mapped.x());
+                            minY = qMin(minY, mapped.y());
+                            maxX = qMax(maxX, mapped.x());
+                            maxY = qMax(maxY, mapped.y());
+                        }
+                    }
+                    const QRectF clipBounds(minX, minY,
+                                            maxX - minX, maxY - minY);
+                    applyClipToRange(cellBegin, m_target->size(),
+                                     clipBounds);
+                }
             }
         }
         const QVector<Dwg_Object *> ownedAttributes =
@@ -1184,6 +1367,113 @@ private:
         (void)object;
     }
 
+    // Keep only the geometry inside the clip window. Entities fully inside
+    // stay untouched, entities fully outside are dropped, and point-based
+    // geometry that straddles the window is clipped so only the visible
+    // piece remains (matches how AutoCAD truncates a clipped block).
+    void applyClipToRange(int begin, int end, const QRectF &clipBounds)
+    {
+        if (clipBounds.isEmpty()) {
+            return;
+        }
+        for (int i = begin; i < end;) {
+            CadEntity &entity = (*m_target)[i];
+            if (!entity.bounds.isValid()) {
+                ++i;
+                continue;
+            }
+            if (!entity.bounds.intersects(clipBounds)) {
+                m_target->removeAt(i);
+                --end;
+                continue;
+            }
+            if (clipBounds.contains(entity.bounds)) {
+                ++i;
+                continue;
+            }
+            bool clipped = false;
+            if (entity.points.size() >= 2) {
+                QVector<QPointF> kept;
+                kept.reserve(entity.points.size());
+                for (int p = 0; p + 1 < entity.points.size(); ++p) {
+                    QPointF a = entity.points.at(p);
+                    QPointF b = entity.points.at(p + 1);
+                    if (clipSegmentToRect(a, b, clipBounds)) {
+                        if (kept.isEmpty()) {
+                            kept.append(a);
+                        } else if (kept.last() != a) {
+                            // Disjoint piece after clipping; keep both runs
+                            // by appending the jump (rendered as a segment,
+                            // same as unclipped polylines do).
+                            kept.append(a);
+                        }
+                        kept.append(b);
+                    }
+                }
+                if (kept.size() < 2) {
+                    m_target->removeAt(i);
+                    --end;
+                    continue;
+                }
+                entity.points = kept;
+                entity.updateBounds();
+                clipped = true;
+            }
+            if (!clipped) {
+                // Circles, arcs, texts, hatches: keep when the shape's
+                // extents reach into the window (over-draw is bounded by
+                // the window neighbourhood).
+                if (!entity.bounds.intersects(clipBounds)) {
+                    m_target->removeAt(i);
+                    --end;
+                    continue;
+                }
+            }
+            ++i;
+        }
+    }
+
+    // Liang-Barsky segment clipping against an axis-aligned rectangle.
+    static bool clipSegmentToRect(QPointF &a, QPointF &b,
+                                  const QRectF &rect)
+    {
+        double t0 = 0.0;
+        double t1 = 1.0;
+        const double dx = b.x() - a.x();
+        const double dy = b.y() - a.y();
+        const double p[4] = {-dx, dx, -dy, dy};
+        const double q[4] = {a.x() - rect.left(), rect.right() - a.x(),
+                             a.y() - rect.top(), rect.bottom() - a.y()};
+        for (int k = 0; k < 4; ++k) {
+            if (qFuzzyIsNull(p[k])) {
+                if (q[k] < 0.0) {
+                    return false;
+                }
+                continue;
+            }
+            const double r = q[k] / p[k];
+            if (p[k] < 0.0) {
+                if (r > t1) {
+                    return false;
+                }
+                if (r > t0) {
+                    t0 = r;
+                }
+            } else {
+                if (r < t0) {
+                    return false;
+                }
+                if (r < t1) {
+                    t1 = r;
+                }
+            }
+        }
+        const QPointF start = a;
+        a = start + t0 * (b - start);
+        b = start + t1 * (b - start);
+        return true;
+    }
+
     void recordViewport(const QString &layoutName,
                         Dwg_Entity_VIEWPORT *viewport)
     {
@@ -1193,12 +1483,25 @@ private:
             return;
         }
         const QPointF paperCenter = point(viewport->center);
-        const QPointF modelCenter = point(viewport->VIEWCTR);
+        QPointF modelCenter = point(viewport->VIEWCTR);
         const bool paperViewport =
             QLineF(paperCenter, modelCenter).length()
                 <= qMax(1.0, viewport->VIEWSIZE) * 1.0e-9
             && qAbs(viewport->VIEWSIZE - viewport->height)
                 <= qMax(1.0, viewport->height) * 1.0e-9;
+        // DXF 12/22 (VIEWCTR) live in the view's DCS. For a twisted view the
+        // DCS axes are rotated against WCS, so the stored center must be
+        // rotated back by -twist; without this every twisted viewport looks
+        // at a mirrored/rotated (usually empty) model region.
+        if (!paperViewport
+            && qAbs(viewport->VIEWTWIST) > 1.0e-12) {
+            const double theta = -viewport->VIEWTWIST;
+            const double cosTheta = std::cos(theta);
+            const double sinTheta = std::sin(theta);
+            modelCenter = QPointF(
+                modelCenter.x() * cosTheta - modelCenter.y() * sinTheta,
+                modelCenter.x() * sinTheta + modelCenter.y() * cosTheta);
+        }
         QSet<QString> frozenLayers;
         if (!paperViewport && viewport->frozen_layers
             && viewport->num_frozen_layers > 0) {
@@ -1488,7 +1791,10 @@ private:
         const auto *common = object ? object->tio.entity : nullptr;
         const bool isAttribute =
             object && object->fixedtype == DWG_TYPE_ATTRIB;
-        bool visible = common && !common->invisible;
+        // DXF group 60 / DWG entity flag: only bit 0 means invisible. The
+        // value is read as a whole short, so mask it instead of testing the
+        // entire field.
+        bool visible = common && (common->invisible & 1) == 0;
         if (isAttribute) {
             // ATTMODE: 0 = all hidden, 1 = normal (honour each ATTRIB flag),
             // 2 = all visible.
@@ -1865,20 +2171,26 @@ private:
                 (normalZ * major.x() - normalX * 0.0)
                     * ellipse->axis_ratio);
             double start = ellipse->start_angle;
-            double end = ellipse->end_angle;
-            out.closed = qAbs(end - start) < 1.0e-10;
-            if (out.closed) {
+            // A full ELLIPSE stores a 2*PI parameter range, not a zero range.
+            // Treating only a zero range as closed left every closed ellipse
+            // open by one sampling step.
+            double sweep = ellipse->end_angle - start;
+            const bool fullEllipse = std::isfinite(sweep)
+                && qAbs(sweep) >= 2.0 * kPi - 1.0e-9;
+            out.closed = fullEllipse;
+            if (fullEllipse) {
                 start = 0.0;
-                end = 2.0 * kPi;
+                sweep = 2.0 * kPi;
             } else {
-                while (end <= start) {
-                    end += 2.0 * kPi;
+                while (sweep <= 0.0) {
+                    sweep += 2.0 * kPi;
                 }
             }
-            const int count = 128;
-            for (int i = 0; i < count; ++i) {
-                const double t =
-                    start + (end - start) * double(i) / count;
+            const int count = qBound(
+                8, int(std::ceil(qAbs(sweep) / (kPi / 48.0))), 512);
+            const int steps = fullEllipse ? count : count + 1;
+            for (int i = 0; i < steps; ++i) {
+                const double t = start + sweep * double(i) / double(count);
                 out.points.append(center + major * std::cos(t)
                                   + minor * std::sin(t));
             }
@@ -2081,21 +2393,339 @@ private:
             append(std::move(out), transform);
             break;
         }
+        case DWG_TYPE__3DFACE: {
+            auto *face = dwg_object_to__3DFACE(object);
+            if (!face) {
+                break;
+            }
+            QVector<QPointF> corners = {point(face->corner1),
+                                        point(face->corner2),
+                                        point(face->corner3),
+                                        point(face->corner4)};
+            // A triangular face repeats the third corner as the fourth one.
+            if (QLineF(corners.at(2), corners.at(3)).length()
+                <= 1.0e-9) {
+                corners.removeLast();
+            }
+            // invis_flags holds one bit per edge, starting at corner1-corner2.
+            for (int i = 0; i < corners.size(); ++i) {
+                if (face->invis_flags & (1 << i)) {
+                    continue;
+                }
+                const QPointF a = corners.at(i);
+                const QPointF b = corners.at((i + 1) % corners.size());
+                if (QLineF(a, b).length() <= 1.0e-12) {
+                    continue;
+                }
+                CadEntity out = commonEntity(object, insertLayer);
+                out.type = CadEntityType::Segment;
+                out.points = {a, b};
+                append(std::move(out), transform);
+            }
+            break;
+        }
+        case DWG_TYPE_XLINE:
+        case DWG_TYPE_RAY: {
+            auto *ray = object->fixedtype == DWG_TYPE_XLINE
+                ? dwg_object_to_XLINE(object)
+                : dwg_object_to_RAY(object);
+            if (!ray) {
+                break;
+            }
+            const QPointF origin = point(ray->point);
+            QPointF direction(ray->vector.x, ray->vector.y);
+            const double length =
+                std::hypot(direction.x(), direction.y());
+            if (length < 1.0e-12) {
+                break;
+            }
+            direction /= length;
+            CadEntity out = commonEntity(object, insertLayer);
+            out.type = CadEntityType::Segment;
+            // Both types are infinite. Draw them out to the drawing extent so
+            // construction and reference lines appear where CAD shows them.
+            out.points = {
+                object->fixedtype == DWG_TYPE_RAY
+                    ? origin : origin - direction * m_referenceExtent,
+                origin + direction * m_referenceExtent
+            };
+            append(std::move(out), transform);
+            break;
+        }
+        case DWG_TYPE_MLINE: {
+            auto *mline = dwg_object_to_MLINE(object);
+            if (!mline || !mline->verts || mline->num_verts < 2) {
+                break;
+            }
+            // Each vertex stores the definition point plus, for every line of
+            // the style, the offset along the miter direction (segparms[0]).
+            const int lineCount = qBound(1, int(mline->num_lines), 16);
+            for (int lineIndex = 0; lineIndex < lineCount; ++lineIndex) {
+                CadEntity out = commonEntity(object, insertLayer);
+                out.type = CadEntityType::Polyline;
+                out.points.reserve(int(mline->num_verts));
+                for (BITCODE_BS i = 0; i < mline->num_verts; ++i) {
+                    const Dwg_MLINE_vertex &vertex = mline->verts[i];
+                    QPointF position = point(vertex.vertex);
+                    if (vertex.lines && lineIndex < int(vertex.num_lines)
+                        && vertex.lines[lineIndex].num_segparms > 0
+                        && vertex.lines[lineIndex].segparms) {
+                        const double offset =
+                            vertex.lines[lineIndex].segparms[0];
+                        if (std::isfinite(offset)
+                            && qAbs(offset) < m_referenceExtent) {
+                            position +=
+                                QPointF(vertex.miter_direction.x,
+                                        vertex.miter_direction.y) * offset;
+                        }
+                    }
+                    out.points.append(position);
+                }
+                if (out.points.size() >= 2) {
+                    append(std::move(out), transform);
+                }
+            }
+            break;
+        }
+        case DWG_TYPE_HELIX: {
+            auto *helix = dwg_object_to_HELIX(object);
+            if (!helix) {
+                break;
+            }
+            const QPointF base = point(helix->axis_base_pt);
+            const QPointF axis(helix->axis_vector.x,
+                               helix->axis_vector.y);
+            const double turns = helix->turns;
+            const double radius = std::hypot(
+                point(helix->start_pt).x() - base.x(),
+                point(helix->start_pt).y() - base.y());
+            // The planar projection of a helix is a spiral around the axis
+            // base: radius stays per-turn constant while the axial advance
+            // collapses into the sheet plane. Constant-radius wind is the
+            // common case; grow the radius only when turn height says so.
+            if (!(turns > 0.0) || radius <= 1.0e-12) {
+                break;
+            }
+            const double axialPerTurn =
+                std::isfinite(helix->turn_height)
+                ? helix->turn_height : 0.0;
+            const double axisLength = std::hypot(axis.x(), axis.y());
+            const QPointF axisDir = axisLength > 1.0e-12
+                ? axis / axisLength : QPointF(0.0, 1.0);
+            const int stepsPerTurn = 24;
+            const int totalSteps = qBound(
+                8, int(std::ceil(turns)) * stepsPerTurn, 512);
+            CadEntity out = commonEntity(object, insertLayer);
+            out.type = CadEntityType::Polyline;
+            out.points.reserve(totalSteps + 1);
+            for (int i = 0; i <= totalSteps; ++i) {
+                const double t = turns * 2.0 * kPi
+                    * double(i) / double(totalSteps);
+                const double turn = t / (2.0 * kPi);
+                const double angle = helix->handedness
+                    ? t : -t;
+                out.points.append(
+                    base + axisDir * (turn * axialPerTurn)
+                    + QPointF(std::cos(angle), std::sin(angle))
+                          * radius);
+            }
+            append(std::move(out), transform);
+            break;
+        }
+        case DWG_TYPE_MULTILEADER: {
+            auto *mleader = dwg_object_to_MULTILEADER(object);
+            if (!mleader) {
+                break;
+            }
+            const Dwg_MLEADER_AnnotContext &context = mleader->ctx;
+            for (BITCODE_BL nodeIndex = 0;
+                 nodeIndex < context.num_leaders && context.leaders;
+                 ++nodeIndex) {
+                const Dwg_LEADER_Node &node =
+                    context.leaders[nodeIndex];
+                for (BITCODE_BL lineIndex = 0;
+                     lineIndex < node.num_lines && node.lines;
+                     ++lineIndex) {
+                    const Dwg_LEADER_Line &line =
+                        node.lines[lineIndex];
+                    if (line.num_points < 1 || !line.points) {
+                        continue;
+                    }
+                    CadEntity out = commonEntity(object, insertLayer);
+                    out.type = CadEntityType::Polyline;
+                    out.points.reserve(int(line.num_points) + 1);
+                    for (BITCODE_BL pointIndex = 0;
+                         pointIndex < line.num_points; ++pointIndex) {
+                        out.points.append(point(line.points[pointIndex]));
+                    }
+                    // The dogleg is a fixed-length horizontal stub at the
+                    // landing end that carries the content block.
+                    if (node.has_dogleg && node.has_lastleaderlinepoint
+                        && node.dogleg_length > 1.0e-12) {
+                        QPointF dogleg(node.dogleg_vector.x,
+                                       node.dogleg_vector.y);
+                        const double doglegLength =
+                            std::hypot(dogleg.x(), dogleg.y());
+                        if (doglegLength > 1.0e-12) {
+                            out.points.append(
+                                out.points.last()
+                                + dogleg / doglegLength
+                                      * node.dogleg_length);
+                        }
+                    }
+                    if (out.points.size() >= 2) {
+                        append(std::move(out), transform);
+                    }
+                }
+            }
+            if (context.has_content_txt
+                && context.content.txt.default_text) {
+                const QString label = cleanCadText(
+                    decodedDwgText(context.content.txt.default_text));
+                if (!label.trimmed().isEmpty()) {
+                    CadEntity out = commonEntity(object, insertLayer);
+                    out.type = CadEntityType::Text;
+                    out.text = label;
+                    out.textPosition = point(context.content.txt.location);
+                    out.points = {out.textPosition};
+                    out.textHeight = qMax(
+                        0.1,
+                        std::isfinite(context.content.txt.height)
+                            && context.content.txt.height > 0.0
+                            ? context.content.txt.height
+                            : (std::isfinite(context.text_height)
+                                   && context.text_height > 0.0
+                               ? context.text_height : 2.5));
+                    append(std::move(out), transform);
+                }
+            }
+            break;
+        }
+        case DWG_TYPE_MESH: {
+            auto *mesh = dwg_object_to_MESH(object);
+            if (!mesh || !mesh->vertex || mesh->num_vertex < 2) {
+                break;
+            }
+            // The wireframe view shows the explicit crease edges; faces are
+            // triangulation detail the sheet does not need. The flat face
+            // array has no reliable per-face count in LibreDWG, so without
+            // edges the mesh is skipped rather than risk bogus indices.
+            if (mesh->edges && mesh->num_edges > 0) {
+                for (BITCODE_BL edgeIndex = 0;
+                     edgeIndex < mesh->num_edges; ++edgeIndex) {
+                    const Dwg_MESH_edge &edge = mesh->edges[edgeIndex];
+                    if (edge.idxfrom >= mesh->num_vertex
+                        || edge.idxto >= mesh->num_vertex) {
+                        continue;
+                    }
+                    CadEntity out = commonEntity(object, insertLayer);
+                    out.type = CadEntityType::Segment;
+                    out.points = {point(mesh->vertex[edge.idxfrom]),
+                                  point(mesh->vertex[edge.idxto])};
+                    append(std::move(out), transform);
+                }
+            }
+            break;
+        }
         default: {
+            // The six base dimension types sit in one enum run; the jogged
+            // radius and arc-length dimensions live in the extended range
+            // but share Dwg_DIMENSION_common.
             const bool dimension =
-                object->fixedtype >= DWG_TYPE_DIMENSION_ORDINATE
-                && object->fixedtype <= DWG_TYPE_DIMENSION_ANG2LN;
+                (object->fixedtype >= DWG_TYPE_DIMENSION_ORDINATE
+                 && object->fixedtype <= DWG_TYPE_DIMENSION_ANG2LN)
+                || object->fixedtype == DWG_TYPE_DIMENSION_RADIUS
+                || object->fixedtype == DWG_TYPE_DIMENSION_DIAMETER
+                || object->fixedtype == DWG_TYPE_LARGE_RADIAL_DIMENSION
+                || object->fixedtype == DWG_TYPE_ARC_DIMENSION;
             if (dimension) {
-                Dwg_DIMENSION_common *dim =
-                    dwg_object_to_DIMENSION(object);
+                // dwg_object_to_DIMENSION() rejects the two extended
+                // dimension variants, but DIMENSION_COMMON is the first
+                // member of both structs, so the pointer cast is safe.
+                Dwg_DIMENSION_common *dim = nullptr;
+                if (object->fixedtype
+                    == DWG_TYPE_LARGE_RADIAL_DIMENSION) {
+                    dim = object->tio.entity
+                              && object->tio.entity->tio
+                                     .LARGE_RADIAL_DIMENSION
+                          ? (Dwg_DIMENSION_common *)object->tio.entity->tio
+                                .LARGE_RADIAL_DIMENSION
+                          : nullptr;
+                } else if (object->fixedtype
+                           == DWG_TYPE_ARC_DIMENSION) {
+                    dim = object->tio.entity
+                              && object->tio.entity->tio.ARC_DIMENSION
+                          ? (Dwg_DIMENSION_common *)object->tio.entity->tio
+                                .ARC_DIMENSION
+                          : nullptr;
+                } else {
+                    dim = dwg_object_to_DIMENSION(object);
+                }
+                bool expanded = false;
                 if (dim && dim->block) {
                     int error = 0;
                     Dwg_Object *header =
                         dwg_ref_get_object(dim->block, &error);
                     if (header && !error) {
+                        ++m_dimensionBlocksResolved;
                         visitBlockHeader(
                             header, transform, depth + 1,
                             commonEntity(object, insertLayer).layer);
+                        expanded = true;
+                    }
+                }
+                // Without the anonymous dimension block the geometry is gone,
+                // but the annotation itself is still real: DXF 1 holds the
+                // dimension text and DXF 11 its midpoint.
+                if (dim && !expanded) {
+                    ++m_dimensionFallbackTexts;
+                    QString label =
+                        cleanCadText(decodedDwgText(dim->user_text));
+                    if (label.isEmpty()
+                        && std::isfinite(dim->act_measurement)) {
+                        label = QString::number(dim->act_measurement, 'f',
+                                                0);
+                    }
+                    if (!label.trimmed().isEmpty()) {
+                        CadEntity out = commonEntity(object, insertLayer);
+                        out.type = CadEntityType::Text;
+                        out.text = label;
+                        out.textPosition =
+                            ocsPoint(QPointF(dim->text_midpt.x,
+                                             dim->text_midpt.y),
+                                     dim->elevation, dim->extrusion);
+                        out.points = {out.textPosition};
+                        out.textHeight =
+                            qMax(0.1, dimensionTextHeight(dim));
+                        out.textRotation = qRadiansToDegrees(
+                            qAbs(dim->text_rotation) > 1.0e-12
+                                ? dim->text_rotation : dim->horiz_dir);
+                        append(std::move(out), transform);
+                    }
+                }
+            }
+            if (!dimension) {
+                ++m_skippedHistogram[static_cast<int>(object->fixedtype)];
+                if (object->fixedtype == DWG_TYPE_POINT
+                    && object->tio.entity
+                    && object->tio.entity->tio.POINT) {
+                    const auto *pt = object->tio.entity->tio.POINT;
+                    if (std::isfinite(pt->x) && std::isfinite(pt->y)) {
+                        ++m_skippedPointCount;
+                        const QPointF position(pt->x, pt->y);
+                        if (m_skippedPointCount == 1) {
+                            m_skippedPointMin = position;
+                            m_skippedPointMax = position;
+                        } else {
+                            m_skippedPointMin.setX(
+                                qMin(m_skippedPointMin.x(), position.x()));
+                            m_skippedPointMin.setY(
+                                qMin(m_skippedPointMin.y(), position.y()));
+                            m_skippedPointMax.setX(
+                                qMax(m_skippedPointMax.x(), position.x()));
+                            m_skippedPointMax.setY(
+                                qMax(m_skippedPointMax.y(), position.y()));
+                        }
                     }
                 }
             }
@@ -2139,8 +2769,14 @@ private:
     QVector<CadEntity> *m_target = &m_document.entities;
     QHash<uint32_t, int> m_layerHandles;
     QHash<quint64, QVector<Dwg_Object *>> m_attributesByOwner;
+    QHash<quint64, QPolygonF> m_clipByEntityHandle;
     QHash<QString, QVector<CadEntity>> m_externalReferenceBlocks;
     QHash<int, quint64> m_typeHistogram;
+    QHash<int, quint64> m_skippedHistogram;
+    QRectF m_skippedPointBounds;
+    QPointF m_skippedPointMin;
+    QPointF m_skippedPointMax;
+    quint64 m_skippedPointCount = 0;
     quint64 m_blocksVisited = 0;
     quint64 m_insertsVisited = 0;
     quint64 m_unresolvedInserts = 0;
@@ -2154,6 +2790,11 @@ private:
     int m_attMode = 0;
     bool m_mirrText = false;
     int m_nextHatchGroup = 0;
+    // Length used to clip infinite XLINE/RAY geometry, and as the sanity
+    // limit for MLINE offsets.
+    double m_referenceExtent = 1000.0;
+    quint64 m_dimensionBlocksResolved = 0;
+    quint64 m_dimensionFallbackTexts = 0;
 };
 
 } // namespace

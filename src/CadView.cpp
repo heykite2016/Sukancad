@@ -37,6 +37,12 @@ constexpr double kMinHatchSpacing = 0.1;
 constexpr double kMinTextPixelHeight = 1.0;
 constexpr double kDotScreenLength = 0.5;
 
+// 标注线宽：随图纸缩放一起变粗，但保底为基准宽度，避免缩小后看不见。
+inline double annotationStroke(double base, double geometryScale)
+{
+    return qMax(base, base * geometryScale);
+}
+
 struct LineBatchKey {
     QRgb color = 0;
     int width = 0;
@@ -1400,7 +1406,20 @@ double CadView::dimensionReferenceTextHeightWorld() const
 
 double CadView::annotationGeometryScale() const
 {
-    return m_scale * dimensionReferenceTextHeightWorld() / 13.0;
+    // 标注跟随图纸：字高取图纸自身的尺寸文字高度（世界单位），再按当前
+    // 缩放换算成屏幕像素 —— 缩放图纸时标注一起放大缩小，与 CAD 内的
+    // 标注实体一致。annotationStyleMetrics().textSize 是基准像素值，
+    // 因此这里返回 px/基准像素 的比例系数。
+    const double referenceHeight = dimensionReferenceTextHeightWorld();
+    const double pixelsPerUnit = std::isfinite(m_scale) ? m_scale : 1.0;
+    const double baseTextSize =
+        qMax(1.0, annotationStyleMetrics(m_settings.annotationStyle)
+                      .textSize);
+    const double scale = pixelsPerUnit * referenceHeight / baseTextSize;
+    if (!std::isfinite(scale) || scale <= 0.0) {
+        return 1.0;
+    }
+    return scale;
 }
 
 void CadView::updateSnap(const QPointF &screenPoint)
@@ -1408,8 +1427,10 @@ void CadView::updateSnap(const QPointF &screenPoint)
     m_cursorScreen = screenPoint;
     m_cursorWorld = screenToWorld(screenPoint);
     m_snap = {};
-    if (m_snapEnabled && m_document && !m_awaitingLabel
-        && m_mode != ToolMode::Select) {
+    // Object snap stays live even in the idle Select tool, exactly like
+    // AutoCAD: the crosshair is pulled onto the snap point and the marker
+    // shows what kind of point was found.
+    if (m_snapEnabled && m_document && !m_awaitingLabel) {
         m_snap =
             m_snapEngine.findSnap(m_cursorWorld, snapRadiusWorld(), m_snapModes);
     }
@@ -1426,6 +1447,13 @@ void CadView::updateSnap(const QPointF &screenPoint)
             qAbs(delta.x()) >= qAbs(delta.y())
             ? QPointF(m_cursorWorld.x(), origin.y())
             : QPointF(origin.x(), m_cursorWorld.y());
+        // Ortho moved the point away from the snap: the marker would lie.
+        if (m_snap.valid
+            && QLineF(m_snap.point, m_cursorWorld).length()
+                > snapRadiusWorld() * 1.0e-3) {
+            m_snap = {};
+            emit snapChanged({});
+        }
     }
     if (m_awaitingLabel) {
         m_labelPreview = m_cursorWorld;
@@ -1436,6 +1464,7 @@ void CadView::updateSnap(const QPointF &screenPoint)
         && QLineF(worldToScreen(m_draftPoints.first()), screenPoint).length()
             <= 14.0;
     m_polygonClosurePrompted = nearPolygonStart;
+    m_displayScreen = worldToScreen(m_cursorWorld);
     emit cursorWorldChanged(m_cursorWorld);
 }
 
@@ -1522,6 +1551,19 @@ QImage CadView::renderToImage(const QSize &size)
                      / qMax(1.0e-9, m_document->savedViewWidth),
                  availableHeight / m_document->savedViewHeight));
         m_center = m_document->savedViewCenter;
+    } else if (m_activeSpace == QStringLiteral("模型")
+               && !m_document->isPdf()) {
+        // Snapshots and exports must match the interactive initial view:
+        // the raw bounds can be inflated by stray entities far outside the
+        // actual content cluster.
+        const QRectF initialBounds = cadInitialViewBounds(
+            m_document->entities, m_document->bounds);
+        m_scale = qMax(
+            1.0e-14,
+            qMin(availableWidth / qMax(1.0e-9, initialBounds.width()),
+                 availableHeight
+                     / qMax(1.0e-9, initialBounds.height())));
+        m_center = initialBounds.center();
     } else {
         m_scale = qMax(
             1.0e-14,
@@ -1683,16 +1725,19 @@ void CadView::renderScene(QPainter &painter, const QSize &viewport,
         && !m_dragLabel && !m_spaceDown) {
         painter.save();
         painter.setClipRect(QRect(QPoint(0, 0), viewport));
-        QColor crosshairColor = m_settings.crosshairColor;
-        if (!crosshairColor.isValid()) {
-            crosshairColor = QColor(QStringLiteral("#ffffff"));
+        // The crosshair centre is the *effective* point: it is pulled onto
+        // the snap point exactly like AutoCAD, so what you see is what a
+        // click will pick.
+        const QPointF shot = m_displayScreen;
+        const bool snapped = m_snap.valid;
+        QColor baseColor = m_settings.crosshairColor;
+        if (!baseColor.isValid()) {
+            baseColor = QColor(QStringLiteral("#ffffff"));
         }
-        crosshairColor.setAlpha(qMax(225, crosshairColor.alpha()));
+        const QColor ink = snapped ? QColor(QStringLiteral("#5ff0c1"))
+                                   : baseColor;
         const double crosshairLineWidth = qBound(
             0.5, m_settings.crosshairLineWidth, 4.0);
-        QPen crosshairPen(crosshairColor, crosshairLineWidth);
-        crosshairPen.setCosmetic(true);
-        painter.setPen(crosshairPen);
         const int crosshairPercent = qBound(
             1, m_settings.crosshairLength, 100);
         const bool fullCrosshair = crosshairPercent >= 100;
@@ -1700,30 +1745,36 @@ void CadView::renderScene(QPainter &painter, const QSize &viewport,
             ? std::max(viewport.width(), viewport.height())
             : qMin(viewport.width(), viewport.height())
                 * crosshairPercent / 200.0;
-        const double left = fullCrosshair
-            ? 0.0 : m_cursorScreen.x() - halfLength;
+        const double left = fullCrosshair ? 0.0 : shot.x() - halfLength;
         const double right = fullCrosshair
-            ? viewport.width() : m_cursorScreen.x() + halfLength;
-        const double top = fullCrosshair
-            ? 0.0 : m_cursorScreen.y() - halfLength;
+            ? viewport.width() : shot.x() + halfLength;
+        const double top = fullCrosshair ? 0.0 : shot.y() - halfLength;
         const double bottom = fullCrosshair
-            ? viewport.height() : m_cursorScreen.y() + halfLength;
-        painter.drawLine(
-            QPointF(left, m_cursorScreen.y()),
-            QPointF(right, m_cursorScreen.y()));
-        painter.drawLine(
-            QPointF(m_cursorScreen.x(), top),
-            QPointF(m_cursorScreen.x(), bottom));
+            ? viewport.height() : shot.y() + halfLength;
+        // Soft magnet halo underneath the marker.
+        if (snapped) {
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(QColor(95, 240, 193, 34));
+            painter.drawEllipse(shot, 14.0, 14.0);
+            painter.setBrush(Qt::NoBrush);
+        }
+        QColor lineColor = ink;
+        lineColor.setAlpha(snapped ? 230 : 218);
+        QPen crosshairPen(lineColor, crosshairLineWidth);
+        crosshairPen.setCosmetic(true);
+        painter.setPen(crosshairPen);
+        painter.drawLine(QPointF(left, shot.y()), QPointF(right, shot.y()));
+        painter.drawLine(QPointF(shot.x(), top), QPointF(shot.x(), bottom));
+        // Pick box: AutoCAD keeps a small square at the cursor centre.
         painter.setBrush(Qt::NoBrush);
-        QColor centerColor = crosshairColor.lighter(135);
-        centerColor.setAlpha(250);
-        painter.setPen(QPen(
-            centerColor, qMax(0.9, crosshairLineWidth)));
+        QColor pickColor = ink.lighter(120);
+        pickColor.setAlpha(255);
+        painter.setPen(QPen(pickColor, qMax(1.0, crosshairLineWidth)));
+        const double pick = snapped ? 6.0 : 5.0;
         painter.drawRect(
-            QRectF(m_cursorScreen.x() - 5.0,
-                   m_cursorScreen.y() - 5.0, 10.0, 10.0));
-        if (m_snap.valid) {
-            drawSnapMarker(painter, worldToScreen(m_snap.point), m_snap.kind);
+            QRectF(shot.x() - pick, shot.y() - pick, pick * 2.0, pick * 2.0));
+        if (snapped) {
+            drawSnapMarker(painter, shot, m_snap.kind);
         }
         painter.restore();
     }
@@ -2504,8 +2555,9 @@ void CadView::drawArrow(QPainter &painter, const QPointF &tip,
     }
     const AnnotationStyleMetrics metrics =
         annotationStyleMetrics(m_settings.annotationStyle);
+    const double geometryScale = annotationGeometryScale();
     const double markerSize = qMax(
-        0.65, metrics.arrowSize * annotationGeometryScale());
+        0.65, metrics.arrowSize * geometryScale);
     line.setLength(markerSize);
     const double angle = std::atan2(line.dy(), line.dx());
     const QPointF direction = tip - toward;
@@ -2516,13 +2568,17 @@ void CadView::drawArrow(QPainter &painter, const QPointF &tip,
     }
     const QPointF unit = direction / directionLength;
     if (metrics.marker == AnnotationMarker::ArchitecturalTick) {
+        // GB/T 50001：尺寸起止符号为中粗斜短线，长约 2~3mm，
+        // 倾斜方向与尺寸界线成 45°。
         const QPointF tick =
             (unit + QPointF(-unit.y(), unit.x()))
-            * (markerSize * 0.23);
+            * (markerSize * 0.55);
         painter.save();
         painter.setPen(
-            QPen(color, metrics.lineWidth, Qt::SolidLine,
-                 Qt::RoundCap));
+            QPen(color,
+                 annotationStroke(qMax(1.15, metrics.lineWidth),
+                                  geometryScale),
+                 Qt::SolidLine, Qt::RoundCap));
         painter.setBrush(Qt::NoBrush);
         painter.drawLine(tip - tick, tip + tick);
         painter.restore();
@@ -2541,8 +2597,9 @@ void CadView::drawArrow(QPainter &painter, const QPointF &tip,
         const QPointF normal(-unit.y(), unit.x());
         painter.save();
         painter.setPen(
-            QPen(color, metrics.lineWidth, Qt::SolidLine,
-                 Qt::SquareCap));
+            QPen(color,
+                 annotationStroke(metrics.lineWidth, geometryScale),
+                 Qt::SolidLine, Qt::SquareCap));
         painter.drawLine(tip - normal * (markerSize * 0.62),
                          tip + normal * (markerSize * 0.62));
         painter.restore();
@@ -2563,9 +2620,9 @@ void CadView::drawArrow(QPainter &painter, const QPointF &tip,
     painter.save();
     if (open) {
         painter.setPen(
-            QPen(color, metrics.lineWidth, Qt::SolidLine,
-                 Qt::RoundCap,
-                 Qt::RoundJoin));
+            QPen(color,
+                 annotationStroke(metrics.lineWidth, geometryScale),
+                 Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         painter.setBrush(Qt::NoBrush);
     } else {
         painter.setPen(Qt::NoPen);
@@ -2619,6 +2676,62 @@ void CadView::drawVectorLabel(QPainter &painter, const QString &text,
     }
 }
 
+void CadView::drawNotePlate(QPainter &painter, const QString &text,
+                            const QPointF &anchor, const QColor &color,
+                            QRectF *hitRect, bool emphasized)
+{
+    if (text.isEmpty()) {
+        if (hitRect) {
+            *hitRect = QRectF();
+        }
+        return;
+    }
+    const AnnotationStyleMetrics metrics =
+        annotationStyleMetrics(m_settings.annotationStyle);
+    const double geometryScale = annotationGeometryScale();
+    const int fontPixels = qMax(
+        1, qRound(metrics.textSize * geometryScale
+                  + (emphasized ? 1.0 : 0.0)));
+    QFont font = cadFont(fontPixels,
+                         emphasized ? QFont::DemiBold : QFont::Medium);
+    const QStringList lines = text.split(QLatin1Char('\n'));
+    const double lineHeight =
+        (metrics.textSize + 3.0) * geometryScale
+        + (emphasized ? 1.0 : 0.0);
+    QPainterPath textPath;
+    for (int i = 0; i < lines.size(); ++i) {
+        textPath.addText(
+            QPointF(0.0, lineHeight * i), font, lines[i]);
+    }
+    const QRectF textBounds = textPath.boundingRect();
+    textPath.translate(-textBounds.center().x(),
+                       -textBounds.center().y());
+    const double padX = qMax(3.5, 5.5 * geometryScale);
+    const double padY = qMax(2.5, 4.0 * geometryScale);
+    const QRectF plate =
+        textPath.boundingRect().adjusted(-padX, -padY, padX, padY);
+    const QColor ink = m_printStyle ? printColor(color) : color;
+    QColor plateColor = m_printStyle
+        ? QColor(255, 255, 255) : canvasBackgroundColor();
+    plateColor.setAlpha(m_printStyle ? 240 : 226);
+
+    painter.save();
+    painter.translate(anchor);
+    painter.setBrush(plateColor);
+    painter.setPen(QPen(ink, annotationStroke(1.0, geometryScale),
+                        Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    const double radius = qMin(3.0, plate.height() * 0.25);
+    painter.drawRoundedRect(plate, radius, radius);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(ink);
+    painter.drawPath(textPath);
+    painter.restore();
+
+    if (hitRect) {
+        *hitRect = plate.translated(anchor).adjusted(-2.0, -2.0, 2.0, 2.0);
+    }
+}
+
 void CadView::drawDimensionText(QPainter &painter, const QString &text,
                                 const QPointF &anchor,
                                 const QColor &color,
@@ -2665,8 +2778,8 @@ void CadView::drawDimensionText(QPainter &painter, const QString &text,
             orientation.mapRect(textPath.boundingRect())
                 .translated(anchor);
         const QRectF cursorZone(
-            m_cursorScreen.x() - 18.0,
-            m_cursorScreen.y() - 18.0, 36.0, 36.0);
+            m_displayScreen.x() - 18.0,
+            m_displayScreen.y() - 18.0, 36.0, 36.0);
         if (screenBounds.intersects(cursorZone)) {
             const QPointF upperRight(
                 cursorZone.right() + 8.0 - screenBounds.left(),
@@ -2796,6 +2909,435 @@ void CadView::drawInlineDimension(
         painter, text, labelAnchor, color, 0.0, hitRect, false);
 }
 
+QPainterPath CadView::measurementOutline(
+    const Measurement &measurement,
+    const QVector<QPointF> &screenPoints) const
+{
+    QPainterPath path;
+    if (screenPoints.size() < 2) {
+        return path;
+    }
+    const bool hasEdges = !measurement.edgeStarts.isEmpty()
+        && measurement.edgeStarts.size() == measurement.edgeEnds.size()
+        && measurement.edgeStarts.size()
+            == measurement.edgeMidpoints.size();
+    if (hasEdges) {
+        for (int i = 0; i < measurement.edgeStarts.size(); ++i) {
+            const QPointF start = worldToScreen(measurement.edgeStarts[i]);
+            const QPointF end = worldToScreen(measurement.edgeEnds[i]);
+            if (path.isEmpty()) {
+                path.moveTo(start);
+            } else {
+                path.lineTo(start);
+            }
+            const bool arc = i < measurement.edgeArcLengths.size()
+                && measurement.edgeArcLengths[i] > 0.0;
+            if (arc) {
+                const QPainterPath arcPath = arcPathThroughThreePoints(
+                    start, worldToScreen(measurement.edgeMidpoints[i]), end);
+                if (!arcPath.isEmpty()) {
+                    path.addPath(arcPath);
+                    path.lineTo(end);
+                    continue;
+                }
+            }
+            path.lineTo(end);
+        }
+        path.closeSubpath();
+        return path;
+    }
+    path.addPolygon(QPolygonF(screenPoints));
+    path.closeSubpath();
+    return path;
+}
+
+void CadView::drawDimensionChain(QPainter &painter,
+                                 const Measurement &measurement,
+                                 const QVector<QPointF> &screenPoints,
+                                 const QColor &color, bool selected)
+{
+    if (!m_document || screenPoints.size() < 2) {
+        return;
+    }
+    const AnnotationStyleMetrics metrics =
+        annotationStyleMetrics(m_settings.annotationStyle);
+    const double geometryScale = annotationGeometryScale();
+    struct ChainSegment {
+        QPointF start;
+        QPointF end;
+        QPointF mid;
+        bool arc = false;
+        double value = 0.0;
+    };
+    QVector<ChainSegment> segments;
+    const bool hasEdges = !measurement.edgeStarts.isEmpty()
+        && measurement.edgeStarts.size() == measurement.edgeEnds.size();
+    if (hasEdges) {
+        segments.reserve(measurement.edgeStarts.size());
+        for (int i = 0; i < measurement.edgeStarts.size(); ++i) {
+            ChainSegment segment;
+            segment.start = worldToScreen(measurement.edgeStarts[i]);
+            segment.end = worldToScreen(measurement.edgeEnds[i]);
+            segment.mid = i < measurement.edgeMidpoints.size()
+                ? worldToScreen(measurement.edgeMidpoints[i])
+                : (segment.start + segment.end) * 0.5;
+            segment.arc = i < measurement.edgeArcLengths.size()
+                && measurement.edgeArcLengths[i] > 0.0;
+            segment.value = i < measurement.edgeLengths.size()
+                ? measurement.edgeLengths[i]
+                : QLineF(measurement.edgeStarts[i],
+                         measurement.edgeEnds[i]).length();
+            segments.append(segment);
+        }
+    } else {
+        for (int i = 1; i < screenPoints.size(); ++i) {
+            ChainSegment segment;
+            segment.start = screenPoints[i - 1];
+            segment.end = screenPoints[i];
+            segment.mid = (segment.start + segment.end) * 0.5;
+            segment.value = QLineF(measurement.points[i - 1],
+                                   measurement.points[i]).length();
+            segments.append(segment);
+        }
+    }
+    if (segments.isEmpty()) {
+        return;
+    }
+
+    // 尺寸线的偏置侧与距离由标签位置决定：把数字拖到哪一侧，
+    // 整条尺寸链就整体偏到那一侧，符合建筑制图“尺寸线平行于被标注对象”的规则。
+    const QPointF label = worldToScreen(measurement.labelPosition);
+    int referenceIndex = 0;
+    double bestDistance = std::numeric_limits<double>::max();
+    for (int i = 0; i < segments.size(); ++i) {
+        if (segments[i].arc) {
+            continue;
+        }
+        const QPointF delta = segments[i].end - segments[i].start;
+        const double lengthSquared = QPointF::dotProduct(delta, delta);
+        const double t = lengthSquared > 1.0e-12
+            ? qBound(0.0,
+                     QPointF::dotProduct(label - segments[i].start, delta)
+                         / lengthSquared,
+                     1.0)
+            : 0.0;
+        const double distance =
+            QLineF(label, segments[i].start + delta * t).length();
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            referenceIndex = i;
+        }
+    }
+    QPointF referenceDirection =
+        segments[referenceIndex].end - segments[referenceIndex].start;
+    double referenceLength = std::hypot(referenceDirection.x(),
+                                        referenceDirection.y());
+    if (referenceLength <= 1.0e-6) {
+        referenceDirection = QPointF(1.0, 0.0);
+    } else {
+        referenceDirection /= referenceLength;
+    }
+    QPointF referenceNormal(-referenceDirection.y(),
+                            referenceDirection.x());
+    const QPointF referenceMid =
+        (segments[referenceIndex].start + segments[referenceIndex].end) * 0.5;
+    double offset =
+        QPointF::dotProduct(label - referenceMid, referenceNormal);
+    if (offset < 0.0) {
+        referenceNormal = -referenceNormal;
+        offset = -offset;
+    }
+    const QFont valueFont =
+        cadFont(qMax(1, qRound(metrics.textSize * geometryScale)),
+                QFont::Medium);
+    const QFontMetricsF valueMetrics(valueFont);
+    // 尺寸线偏置按字高推导：标注随图纸缩放时，偏距也一起缩放。
+    const double minimumOffset = qMax(6.0, valueMetrics.height() * 1.9);
+    offset = qBound(minimumOffset, offset, minimumOffset * 7.0);
+    QPen dimensionPen(color,
+                      annotationStroke(selected ? metrics.lineWidth + 0.55
+                                                : metrics.lineWidth,
+                                       geometryScale),
+                      Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin);
+    dimensionPen.setCosmetic(!m_printStyle);
+    QPen extensionPen(color,
+                      annotationStroke(selected ? 0.95 : 0.72,
+                                       geometryScale),
+                      Qt::SolidLine, Qt::FlatCap);
+    extensionPen.setCosmetic(!m_printStyle);
+    const double textGap = qMax(2.5, metrics.textGap * geometryScale * 0.62);
+
+    painter.save();
+    painter.setBrush(Qt::NoBrush);
+    const auto drawExtensionLine =
+        [&](const QPointF &origin, const QPointF &target) {
+            const QPointF direction = target - origin;
+            const double length =
+                std::hypot(direction.x(), direction.y());
+            if (length <= 1.0e-6) {
+                return;
+            }
+            const QPointF unit = direction / length;
+            painter.drawLine(
+                origin + unit * (metrics.extensionOffset * geometryScale),
+                target + unit * (metrics.extensionOverrun * geometryScale));
+        };
+    for (int i = 0; i < segments.size(); ++i) {
+        const ChainSegment &segment = segments[i];
+        QPointF direction = segment.end - segment.start;
+        const double length = std::hypot(direction.x(), direction.y());
+        QPointF normal = referenceNormal;
+        if (length > 1.0e-6) {
+            direction /= length;
+            QPointF candidate(-direction.y(), direction.x());
+            if (QPointF::dotProduct(candidate, referenceNormal) < 0.0) {
+                candidate = -candidate;
+            }
+            normal = candidate;
+        }
+        const QPointF a = segment.start + normal * offset;
+        const QPointF b = segment.end + normal * offset;
+
+        painter.setPen(extensionPen);
+        if (i == 0) {
+            drawExtensionLine(segment.start, a);
+        }
+        drawExtensionLine(segment.end, b);
+
+        painter.setPen(dimensionPen);
+        if (segment.arc) {
+            const QPainterPath arcPath = arcPathThroughThreePoints(
+                a, segment.mid + normal * offset, b);
+            if (!arcPath.isEmpty() && arcPath.length() > 1.0) {
+                painter.drawPath(arcPath);
+            } else {
+                painter.drawLine(a, b);
+            }
+        } else {
+            painter.drawLine(a, b);
+        }
+        if (i == 0) {
+            drawArrow(painter, a, b, color);
+        }
+        drawArrow(painter, b, a, color);
+
+        const QString value = formatDimensionValue(
+            segment.value, *m_document, m_settings.lengthUnit,
+            m_settings.lengthPrecision);
+        const double angle = length > 1.0e-6
+            ? std::atan2(direction.y(), direction.x()) * 180.0 / kPi
+            : 0.0;
+        // 数字写在尺寸线上方中部：先抬高半个字高，避免压线。
+        const double textLift = valueMetrics.height() * 0.5;
+        const QPointF textAnchor = segment.arc
+            ? segment.mid + normal * (offset + textGap + textLift)
+            : (a + b) * 0.5 + normal * (textGap + textLift);
+        const double available = length;
+        const double textWidth =
+            valueMetrics.horizontalAdvance(value);
+        if (available > textWidth * 0.92) {
+            // 数字写在尺寸线上方中部（建筑标注习惯），尺寸线不断开。
+            drawDimensionText(painter, value, textAnchor, color, angle,
+                              nullptr, selected);
+        } else {
+            // 段太短：数字引到尺寸线外侧，避免压线。
+            const QPointF outward =
+                textAnchor + normal * (valueMetrics.height() + textGap);
+            const QPointF joint =
+                textAnchor + normal * (valueMetrics.height() * 0.45);
+            painter.setPen(QPen(
+                color, annotationStroke(0.8, geometryScale),
+                Qt::SolidLine, Qt::RoundCap));
+            painter.drawLine(textAnchor, joint);
+            drawArrow(painter, joint, outward, color);
+            drawDimensionText(painter, value, outward, color, 0.0,
+                              nullptr, selected);
+        }
+    }
+    painter.restore();
+}
+
+void CadView::drawSideAreaAnnotation(
+    QPainter &painter, const Measurement &measurement,
+    const QVector<QPointF> &screenPoints, const QColor &color,
+    bool selected)
+{
+    if (!m_document || screenPoints.size() < 2) {
+        return;
+    }
+    const AnnotationStyleMetrics metrics =
+        annotationStyleMetrics(m_settings.annotationStyle);
+    const double geometryScale = annotationGeometryScale();
+    struct Edge {
+        QPointF start;
+        QPointF end;
+        QPointF mid;
+        bool arc = false;
+        double value = 0.0;
+    };
+    QVector<Edge> edges;
+    const bool hasEdges = !measurement.edgeStarts.isEmpty()
+        && measurement.edgeStarts.size() == measurement.edgeEnds.size();
+    if (hasEdges) {
+        edges.reserve(measurement.edgeStarts.size());
+        for (int i = 0; i < measurement.edgeStarts.size(); ++i) {
+            Edge edge;
+            edge.start = worldToScreen(measurement.edgeStarts[i]);
+            edge.end = worldToScreen(measurement.edgeEnds[i]);
+            edge.mid = i < measurement.edgeMidpoints.size()
+                ? worldToScreen(measurement.edgeMidpoints[i])
+                : (edge.start + edge.end) * 0.5;
+            edge.arc = i < measurement.edgeArcLengths.size()
+                && measurement.edgeArcLengths[i] > 0.0;
+            edge.value = i < measurement.edgeLengths.size()
+                ? measurement.edgeLengths[i]
+                : QLineF(measurement.edgeStarts[i],
+                         measurement.edgeEnds[i]).length();
+            edges.append(edge);
+        }
+    } else {
+        for (int i = 1; i < screenPoints.size(); ++i) {
+            Edge edge;
+            edge.start = screenPoints[i - 1];
+            edge.end = screenPoints[i];
+            edge.mid = (edge.start + edge.end) * 0.5;
+            edge.value = QLineF(measurement.points[i - 1],
+                                measurement.points[i]).length();
+            edges.append(edge);
+        }
+    }
+    if (edges.isEmpty()) {
+        return;
+    }
+
+    // 尺寸数字统一朝向“外侧”：以各段中点形心为参照，法线指离形心一侧，
+    // 避免数字压在被标注的建筑轮廓里。
+    QPointF centroid(0.0, 0.0);
+    for (const Edge &edge : std::as_const(edges)) {
+        centroid += edge.mid;
+    }
+    centroid /= double(edges.size());
+
+    const int fontPixels =
+        qMax(1, qRound(metrics.textSize * geometryScale));
+    const QFont valueFont = cadFont(fontPixels, QFont::Medium);
+    const QFontMetricsF valueMetrics(valueFont);
+    const double textGap =
+        qMax(2.0, metrics.textGap * geometryScale * 0.55);
+    const double textLift = valueMetrics.height() * 0.5 + textGap;
+
+    QPen dimensionPen(
+        color,
+        annotationStroke(selected ? metrics.lineWidth + 0.55
+                                  : metrics.lineWidth,
+                         geometryScale),
+        Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin);
+    dimensionPen.setCosmetic(!m_printStyle);
+    QPen leaderPen(color, annotationStroke(0.8, geometryScale),
+                   Qt::SolidLine, Qt::RoundCap);
+    leaderPen.setCosmetic(!m_printStyle);
+
+    painter.save();
+    painter.setBrush(Qt::NoBrush);
+    for (const Edge &edge : std::as_const(edges)) {
+        const QPointF chord = edge.end - edge.start;
+        const double chordLength = std::hypot(chord.x(), chord.y());
+        QPointF tangent = chordLength > 1.0e-6
+            ? chord / chordLength : QPointF(1.0, 0.0);
+        if (edge.arc) {
+            if (const std::optional<QPointF> center =
+                    circleCenterFromThreePoints(
+                        edge.start, edge.mid, edge.end)) {
+                const QPointF radial = edge.mid - *center;
+                const double radialLength =
+                    std::hypot(radial.x(), radial.y());
+                if (radialLength > 1.0e-6) {
+                    QPointF arcTangent(-radial.y() / radialLength,
+                                       radial.x() / radialLength);
+                    if (QPointF::dotProduct(arcTangent, tangent) < 0.0) {
+                        arcTangent = -arcTangent;
+                    }
+                    tangent = arcTangent;
+                }
+            }
+        }
+        QPointF normal(-tangent.y(), tangent.x());
+        const QPointF midRef =
+            edge.arc ? edge.mid : (edge.start + edge.end) * 0.5;
+        if (QPointF::dotProduct(midRef - centroid, normal) < 0.0) {
+            normal = -normal;
+        }
+
+        // 尺寸线：直接压在被选中的线段/圆弧上，起止符号落在对象端点。
+        painter.setPen(dimensionPen);
+        if (edge.arc) {
+            const QPainterPath arcPath = arcPathThroughThreePoints(
+                edge.start, edge.mid, edge.end);
+            if (!arcPath.isEmpty() && arcPath.length() > 0.8) {
+                painter.drawPath(arcPath);
+            } else {
+                painter.drawLine(edge.start, edge.end);
+            }
+        } else {
+            painter.drawLine(edge.start, edge.end);
+        }
+        // 起止符号的 45° 斜线应与标注对象在端点处的切线方向成 45°：
+        // 直段取对端方向；弧段按端点半径的垂直方向（切线）取。
+        QPointF towardStart = edge.end;
+        QPointF towardEnd = edge.start;
+        if (edge.arc) {
+            std::optional<QPointF> arcCenter = circleCenterFromThreePoints(
+                edge.start, edge.mid, edge.end);
+            if (arcCenter) {
+                const QPointF radialStart = edge.start - *arcCenter;
+                const QPointF radialEnd = edge.end - *arcCenter;
+                QPointF tangentStart(-radialStart.y(), radialStart.x());
+                QPointF tangentEnd(-radialEnd.y(), radialEnd.x());
+                if (QPointF::dotProduct(tangentStart,
+                                        edge.mid - edge.start) < 0.0) {
+                    tangentStart = -tangentStart;
+                }
+                if (QPointF::dotProduct(tangentEnd,
+                                        edge.mid - edge.end) < 0.0) {
+                    tangentEnd = -tangentEnd;
+                }
+                towardStart = edge.start + tangentStart;
+                towardEnd = edge.end + tangentEnd;
+            } else {
+                towardStart = edge.mid;
+                towardEnd = edge.mid;
+            }
+        }
+        drawArrow(painter, edge.start, towardStart, color);
+        drawArrow(painter, edge.end, towardEnd, color);
+
+        // 尺寸数字写在尺寸线上，沿尺寸方向排字。
+        const QString value = formatDimensionValue(
+            edge.value, *m_document, m_settings.lengthUnit,
+            m_settings.lengthPrecision);
+        const double angle =
+            std::atan2(tangent.y(), tangent.x()) * 180.0 / kPi;
+        const double textWidth = valueMetrics.horizontalAdvance(value);
+        if (chordLength >= textWidth * 1.02) {
+            drawDimensionText(painter, value, midRef + normal * textLift,
+                              color, angle, nullptr, selected);
+        } else {
+            // 段太短：数字引到尺寸线外侧，箭头指回尺寸线。
+            const QPointF anchor =
+                midRef + normal * (textLift + valueMetrics.height() * 1.25);
+            const QPointF joint =
+                midRef + normal * (valueMetrics.height() * 0.22);
+            painter.setPen(leaderPen);
+            painter.drawLine(joint,
+                             anchor - normal * (valueMetrics.height() * 0.62));
+            drawArrow(painter, joint, anchor, color);
+            drawDimensionText(painter, value, anchor, color, 0.0,
+                              nullptr, selected);
+        }
+    }
+    painter.restore();
+}
+
 void CadView::drawMeasurements(QPainter &painter)
 {
     m_labelHitRects.clear();
@@ -2836,8 +3378,9 @@ void CadView::drawMeasurement(QPainter &painter,
         annotationStyleMetrics(m_settings.annotationStyle);
     const double geometryScale = annotationGeometryScale();
     QPen pen(color,
-             selected ? styleMetrics.lineWidth + 0.65
-                      : styleMetrics.lineWidth,
+             annotationStroke(selected ? styleMetrics.lineWidth + 0.65
+                                       : styleMetrics.lineWidth,
+                              geometryScale),
              Qt::SolidLine, Qt::RoundCap,
              Qt::RoundJoin);
     pen.setCosmetic(!m_printStyle);
@@ -2848,156 +3391,45 @@ void CadView::drawMeasurement(QPainter &painter,
         || measurement.type == MeasurementType::Polygon
         || measurement.type == MeasurementType::FilledArea
         || measurement.type == MeasurementType::AreaOffset) {
+        // 建筑制图习惯：面积标注只画房间轮廓 + 居中的面积/周长文字，
+        // 不在每条边上堆叠尺寸文字。
         if (points.size() >= 3) {
-            const bool hasEdgeGeometry =
-                !measurement.edgeLengths.isEmpty()
-                && measurement.edgeMidpoints.size()
-                    == measurement.edgeLengths.size();
-            const bool hasEdgeEndpoints =
-                !measurement.edgeLengths.isEmpty()
-                && measurement.edgeStarts.size()
-                    == measurement.edgeLengths.size()
-                && measurement.edgeEnds.size()
-                    == measurement.edgeLengths.size();
-            const bool pointsMatchEdges =
-                measurement.edgeLengths.isEmpty()
-                || measurement.edgeLengths.size() == points.size();
-            const int edgeCount =
-                (hasEdgeGeometry || hasEdgeEndpoints)
-                ? measurement.edgeLengths.size() : points.size();
-            if (qEnvironmentVariableIsSet("CADLENS_VERBOSE_RENDER")) {
-                std::fprintf(
-                    stderr,
-                    "area-dimension type=%d points=%lld edges=%lld "
-                    "starts=%lld ends=%lld edgeCount=%d\n",
-                    int(measurement.type),
-                    static_cast<long long>(points.size()),
-                    static_cast<long long>(
-                        measurement.edgeLengths.size()),
-                    static_cast<long long>(
-                        measurement.edgeStarts.size()),
-                    static_cast<long long>(
-                        measurement.edgeEnds.size()),
-                    edgeCount);
-            }
-            for (int i = 0; i < edgeCount; ++i) {
-                const int next = (i + 1) % points.size();
-                const QPointF a = points[i];
-                const QPointF b = points[next];
-                const QPointF midpoint =
-                    hasEdgeGeometry
-                    ? worldToScreen(measurement.edgeMidpoints[i])
-                    : (a + b) * 0.5;
-                QPointF worldStart;
-                QPointF worldEnd;
-                if (hasEdgeEndpoints) {
-                    worldStart = measurement.edgeStarts[i];
-                    worldEnd = measurement.edgeEnds[i];
-                } else if (pointsMatchEdges) {
-                    worldStart = measurement.points[i];
-                    worldEnd = measurement.points[next];
-                } else {
-                    worldStart = screenToWorld(midpoint);
-                    worldEnd = worldStart;
-                }
-                const double edgeLength =
-                    hasEdgeGeometry
-                    ? measurement.edgeLengths[i]
-                    : QLineF(measurement.points[i],
-                             measurement.points[next]).length();
-                drawInlineDimension(
-                    painter,
-                    formatDimensionValue(
-                        edgeLength, *m_document, m_settings.lengthUnit,
-                        m_settings.lengthPrecision),
-                    worldStart, worldEnd,
-                    measurement.labelPosition, color);
-            }
-        }
-    } else if ((measurement.type == MeasurementType::Continuous
-                || measurement.type == MeasurementType::SideArea)
-               && points.size() >= 2) {
-        if (!measurement.edgeLengths.isEmpty()
-            && measurement.edgeStarts.size()
-                == measurement.edgeLengths.size()
-            && measurement.edgeEnds.size()
-                == measurement.edgeLengths.size()
-            && measurement.edgeMidpoints.size()
-                == measurement.edgeLengths.size()) {
-            for (int i = 0; i < measurement.edgeLengths.size(); ++i) {
-                const QString value = formatDimensionValue(
-                    measurement.edgeLengths[i],
-                    *m_document, m_settings.lengthUnit,
-                    m_settings.lengthPrecision);
-                const bool arc = i < measurement.edgeArcLengths.size()
-                    && measurement.edgeArcLengths[i] > 0.0;
-                if (arc) {
-                    const QPointF start = measurement.edgeStarts[i];
-                    const QPointF midpoint = measurement.edgeMidpoints[i];
-                    const QPointF end = measurement.edgeEnds[i];
-                    const QPainterPath arcPath = arcPathThroughThreePoints(
-                        worldToScreen(start), worldToScreen(midpoint),
-                        worldToScreen(end));
-                    if (!arcPath.isEmpty()) {
-                        painter.drawPath(arcPath);
+            const QPainterPath outline =
+                measurementOutline(measurement, points);
+            if (!outline.isEmpty()) {
+                QColor wash = color;
+                wash.setAlpha(selected ? 36 : 22);
+                painter.save();
+                painter.setBrush(wash);
+                painter.setPen(QPen(
+                    color,
+                    annotationStroke(selected ? 1.85 : 1.35,
+                                     geometryScale),
+                    Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+                painter.drawPath(outline);
+                painter.restore();
+                if (selected) {
+                    painter.save();
+                    painter.setPen(Qt::NoPen);
+                    painter.setBrush(color.lighter(115));
+                    for (const QPointF &vertex : points) {
+                        painter.drawRect(QRectF(vertex.x() - 2.6,
+                                                vertex.y() - 2.6,
+                                                5.2, 5.2));
                     }
-                    const double angle =
-                        -std::atan2(end.y() - start.y(),
-                                    end.x() - start.x())
-                        * 180.0 / kPi;
-                    drawDimensionText(
-                        painter, value,
-                        worldToScreen(midpoint),
-                        color, angle);
-                } else {
-                    drawInlineDimension(
-                        painter, value,
-                        measurement.edgeStarts[i],
-                        measurement.edgeEnds[i],
-                        measurement.labelPosition, color);
+                    painter.restore();
                 }
             }
-        } else {
-            for (int i = 1; i < points.size(); ++i) {
-                drawInlineDimension(
-                    painter,
-                    formatDimensionValue(
-                        QLineF(measurement.points[i - 1],
-                               measurement.points[i]).length(),
-                        *m_document, m_settings.lengthUnit,
-                        m_settings.lengthPrecision),
-                    measurement.points[i - 1], measurement.points[i],
-                    measurement.labelPosition, color);
-            }
         }
-
-        QPointF arrowTip = points.first();
-        double bestDistance = std::numeric_limits<double>::max();
-        for (int i = 1; i < points.size(); ++i) {
-            const QPointF segment = points[i] - points[i - 1];
-            const double lengthSquared =
-                QPointF::dotProduct(segment, segment);
-            if (lengthSquared < 1.0e-12) {
-                continue;
-            }
-            const double t = qBound(
-                0.0,
-                QPointF::dotProduct(label - points[i - 1], segment)
-                    / lengthSquared,
-                1.0);
-            const QPointF candidate = points[i - 1] + segment * t;
-            const double distance = QLineF(label, candidate).length();
-            if (distance < bestDistance) {
-                bestDistance = distance;
-                arrowTip = candidate;
-            }
-        }
-        if (QLineF(label, arrowTip).length()
-            > 2.0 * geometryScale) {
-            painter.setPen(QPen(color, selected ? 1.6 : 1.2));
-            painter.drawLine(label, arrowTip);
-            drawArrow(painter, arrowTip, label, color);
-        }
+    } else if (measurement.type == MeasurementType::Continuous
+               && points.size() >= 2) {
+        drawDimensionChain(painter, measurement, points, color, selected);
+    } else if (measurement.type == MeasurementType::SideArea
+               && points.size() >= 2) {
+        // 侧面积：尺寸线画在选中的线段/圆弧本身上，段长直接写在线上，
+        // 面积结果单独用引线标注，不与段长数字混淆。
+        drawSideAreaAnnotation(painter, measurement, points, color,
+                               selected);
     } else if (measurement.type == MeasurementType::Diameter
                && points.size() >= 2) {
         const QPointF center = points[0];
@@ -3323,9 +3755,9 @@ void CadView::drawMeasurement(QPainter &painter,
             &hitRect, false);
         primaryTextDrawnInline = true;
     }
-    if (!boxedAnnotation && !primaryTextDrawnInline
-        && measurement.type != MeasurementType::Continuous
-        && measurement.type != MeasurementType::SideArea
+    const bool chainLabelSuppressed =
+        measurement.type == MeasurementType::Continuous;
+    if (!boxedAnnotation && !primaryTextDrawnInline && !chainLabelSuppressed
         && !points.isEmpty()) {
         const bool closedArea =
             measurement.type == MeasurementType::Rectangle
@@ -3401,9 +3833,18 @@ void CadView::drawMeasurement(QPainter &painter,
     if (boxedAnnotation) {
         drawVectorLabel(painter, labelText, label, color, &hitRect,
                         selected);
-    } else if (!primaryTextDrawnInline) {
-        drawDimensionText(painter, labelText, textAnchor, color, textAngle,
-                          &hitRect, selected);
+    } else if (!primaryTextDrawnInline && !chainLabelSuppressed) {
+        if (measurement.type == MeasurementType::SideArea) {
+            // 侧面积 = 选中线段/圆弧总长 × 输入高度，结果直接标在图上，
+            // 用带底板的框与引线，避免和尺寸链的逐段数字混淆。
+            drawNotePlate(painter, labelText, textAnchor, color, &hitRect,
+                          selected);
+        } else {
+            // 连续尺寸链：图面只保留逐段数字，“总长”在测量列表查看，
+            // 避免主标签与段数字重叠。
+            drawDimensionText(painter, labelText, textAnchor, color,
+                              textAngle, &hitRect, selected);
+        }
     }
     if (hitRect.isValid()) {
         m_labelHitRects.insert(measurement.id, hitRect);
@@ -3642,17 +4083,79 @@ void CadView::drawDraft(QPainter &painter)
          || m_mode == ToolMode::ZoomWindow)
         && m_draftPoints.size() == 1) {
         painter.save();
-        const QColor previewColor =
-            m_mode == ToolMode::ZoomWindow
-            ? QColor(QStringLiteral("#44ef9a"))
-            : QColor(QStringLiteral("#e1b65a"));
-        painter.setPen(QPen(previewColor, 1.1, Qt::DashLine));
+        const bool printArea = m_mode == ToolMode::PrintArea;
+        const QColor previewColor = printArea
+            ? QColor(QStringLiteral("#e1b65a"))
+            : QColor(QStringLiteral("#44ef9a"));
+        const QRectF selectionRect =
+            QRectF(worldToScreen(m_draftPoints.first()), m_displayScreen)
+                .normalized();
+        // Translucent wash so the drawing stays readable underneath.
         QColor fill = previewColor;
-        fill.setAlpha(28);
+        fill.setAlpha(printArea ? 46 : 28);
+        painter.setPen(Qt::NoPen);
         painter.setBrush(fill);
-        painter.drawRect(
-            QRectF(worldToScreen(m_draftPoints.first()), m_cursorScreen)
-                .normalized());
+        painter.drawRect(selectionRect);
+        // Strong solid frame + corner handles: unmistakable feedback for
+        // the area that will be printed.
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(QPen(previewColor, 1.8));
+        painter.drawRect(selectionRect);
+        painter.setPen(QPen(previewColor, 2.4));
+        constexpr double kHandle = 9.0;
+        const QPointF corners[4] = {
+            selectionRect.topLeft(), selectionRect.topRight(),
+            selectionRect.bottomLeft(), selectionRect.bottomRight()
+        };
+        for (const QPointF &corner : corners) {
+            painter.drawLine(corner + QPointF(-kHandle, 0.0), corner);
+            painter.drawLine(corner, corner + QPointF(0.0, kHandle));
+            painter.drawLine(corner + QPointF(kHandle, 0.0), corner);
+            painter.drawLine(corner, corner + QPointF(0.0, -kHandle));
+        }
+        // Full-canvas guide lines through the two edges for alignment.
+        painter.setPen(QPen(QColor(previewColor.red(), previewColor.green(),
+                                   previewColor.blue(), 90),
+                            1.0, Qt::DotLine));
+        painter.drawLine(QPointF(0.0, selectionRect.top()),
+                         QPointF(width(), selectionRect.top()));
+        painter.drawLine(QPointF(0.0, selectionRect.bottom()),
+                         QPointF(width(), selectionRect.bottom()));
+        painter.drawLine(QPointF(selectionRect.left(), 0.0),
+                         QPointF(selectionRect.left(), height()));
+        painter.drawLine(QPointF(selectionRect.right(), 0.0),
+                         QPointF(selectionRect.right(), height()));
+        if (printArea && m_document) {
+            // Live sheet size in millimetres, following the cursor.
+            const double widthMm =
+                qAbs(m_cursorWorld.x() - m_draftPoints.first().x())
+                * m_document->metersPerDrawingUnit / 0.001;
+            const double heightMm =
+                qAbs(m_cursorWorld.y() - m_draftPoints.first().y())
+                * m_document->metersPerDrawingUnit / 0.001;
+            const QString label = QStringLiteral("%1 × %2 mm")
+                .arg(widthMm, 0, 'f', widthMm >= 100.0 ? 0 : 1)
+                .arg(heightMm, 0, 'f', heightMm >= 100.0 ? 0 : 1);
+            QFont labelFont = painter.font();
+            labelFont.setPointSizeF(10.5);
+            labelFont.setBold(true);
+            painter.setFont(labelFont);
+            const QFontMetrics metrics(labelFont);
+            const QRectF textRect = metrics.boundingRect(label);
+            const QPointF anchor(
+                m_displayScreen.x() + 14.0,
+                qBound(18.0, m_displayScreen.y() - 14.0,
+                       double(height()) - 18.0));
+            QRectF pill = textRect.adjusted(-9.0, -5.0, 9.0, 5.0);
+            pill.moveTopLeft(anchor);
+            pill = pill.intersected(QRectF(QPointF(0, 0),
+                                           QSizeF(width(), height())));
+            painter.setPen(QPen(previewColor, 1.2));
+            painter.setBrush(QColor(16, 22, 26, 225));
+            painter.drawRoundedRect(pill, 5.0, 5.0);
+            painter.setPen(QColor(QStringLiteral("#f5f8fa")));
+            painter.drawText(pill, Qt::AlignCenter, label);
+        }
         painter.restore();
         return;
     }
@@ -3712,7 +4215,7 @@ void CadView::drawDraft(QPainter &painter)
         painter.drawLine(
             worldToScreen(m_draftPoints.last()),
             m_polygonClosurePrompted ? worldToScreen(m_draftPoints.first())
-                                     : m_cursorScreen);
+                                     : m_displayScreen);
     }
 }
 
@@ -4080,6 +4583,19 @@ bool CadView::commitDraft(const QPointF &labelWorld)
     measurement->id = defaultMeasurementId();
     measurement->space = m_activeSpace;
     measurement->color = m_settings.annotationColor;
+    // 面积类标注默认把数字放在房间形心（用户仍可拖动标签移出）。
+    const bool closedAreaType =
+        measurement->type == MeasurementType::Rectangle
+        || measurement->type == MeasurementType::Polygon
+        || measurement->type == MeasurementType::FilledArea
+        || measurement->type == MeasurementType::AreaOffset;
+    if (closedAreaType && measurement->points.size() >= 3
+        && !QPolygonF(measurement->points)
+                .containsPoint(measurement->labelPosition,
+                               Qt::OddEvenFill)) {
+        measurement->labelPosition =
+            areaInteriorPoint(measurement->points);
+    }
     pushUndo();
     m_measurements.append(*measurement);
     m_selectedMeasurementId = measurement->id;
@@ -4261,6 +4777,8 @@ void CadView::wheelEvent(QWheelEvent *event)
     }
     if (qAbs(steps) > 0.001) {
         zoomAt(std::pow(1.18, steps), event->position().toPoint());
+        // 视图变换后重新投影光标，让十字/捕捉点立即对齐新视图。
+        updateSnap(m_cursorScreen);
     }
     event->accept();
 }
@@ -4272,6 +4790,7 @@ bool CadView::event(QEvent *event)
         if (gesture->gestureType() == Qt::ZoomNativeGesture) {
             const double factor = qBound(0.75, 1.0 + gesture->value(), 1.35);
             zoomAt(factor, gesture->position().toPoint());
+            updateSnap(m_cursorScreen);
             event->accept();
             return true;
         }
@@ -4281,6 +4800,19 @@ bool CadView::event(QEvent *event)
 
 void CadView::keyPressEvent(QKeyEvent *event)
 {
+    // 直接敲字母/数字 → 转投命令行（AutoCAD 习惯），空格保留给拖拽平移
+    if ((event->modifiers()
+         & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))
+            == Qt::NoModifier
+        && event->key() != Qt::Key_Space && event->key() != Qt::Key_unknown
+        && !event->text().isEmpty()) {
+        const QChar typed = event->text().at(0);
+        if (typed.isPrint() && typed.unicode() < 128) {
+            emit commandTextEntered(event->text());
+            event->accept();
+            return;
+        }
+    }
     if (event->key() == Qt::Key_Escape) {
         if (!m_awaitingLabel
             && (m_mode == ToolMode::Continuous
@@ -4508,12 +5040,22 @@ QVector<CadEntity> CadView::composeLayoutContent(
             viewport.windowSize);
         const double cosine = std::cos(viewport.twist);
         const double sine = std::sin(viewport.twist);
+        // The visible model region is the paper window rotated back by
+        // -twist about the model center. Cull against that region's
+        // bounding box; using the unrotated paper aspect drops entities
+        // near the edges of every twisted viewport.
+        const double halfModelWidth =
+            viewport.windowSize.width() * 0.5 / viewScale;
+        const double halfModelHeight = viewport.viewHeight * 0.5;
+        const double extentX =
+            std::abs(halfModelWidth * cosine)
+            + std::abs(halfModelHeight * sine);
+        const double extentY =
+            std::abs(halfModelWidth * sine)
+            + std::abs(halfModelHeight * cosine);
         const QRectF modelWindow(
-            viewport.modelCenter.x()
-                - viewport.windowSize.width() * 0.5 / viewScale,
-            viewport.modelCenter.y() - viewport.viewHeight * 0.5,
-            viewport.windowSize.width() / viewScale,
-            viewport.viewHeight);
+            viewport.modelCenter - QPointF(extentX, extentY),
+            QSizeF(extentX * 2.0, extentY * 2.0));
         const auto mapPoint = [&](const QPointF &source) {
             const QPointF delta =
                 (source - viewport.modelCenter) * viewScale;
@@ -4707,6 +5249,7 @@ bool CadView::appendContinuousArcAt(const QPointF &screenPoint)
     m_usedContinuousArcIndices.insert(index);
     m_cursorWorld = path.last();
     m_cursorScreen = worldToScreen(path.last());
+    m_displayScreen = m_cursorScreen;
     const bool closed =
         m_draftPoints.size() >= 3
         && QLineF(

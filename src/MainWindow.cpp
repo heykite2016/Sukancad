@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "CommandLine.h"
 #include "FileAssociation.h"
 #include "StartScreen.h"
 
@@ -18,6 +19,9 @@
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QDockWidget>
+#include <QDragEnterEvent>
+#include <QDropEvent>
+#include <QMimeData>
 #include <QElapsedTimer>
 #include <QFileDialog>
 #include <QFile>
@@ -48,6 +52,7 @@
 #include <QPrinterInfo>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QSet>
 #include <QSettings>
 #include <QSignalBlocker>
@@ -834,6 +839,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     setWindowIcon(QIcon(QStringLiteral(":/icons/logo.svg")));
     resize(1500, 940);
     setMinimumSize(1040, 680);
+    setAcceptDrops(true);
 
     QSettings settings = applicationSettings();
     QSettings legacySettings = cacheSettings();
@@ -912,6 +918,19 @@ void MainWindow::wireViewSignals(CadView *view)
     connect(view, &CadView::statusMessage, this,
             [this](const QString &message) {
                 statusBar()->showMessage(message, 7000);
+                if (m_commandLine) {
+                    m_commandLine->setHint(message);
+                }
+            });
+    connect(view, &CadView::commandTextEntered, this,
+            [this](const QString &text) {
+                if (!m_commandLine) {
+                    return;
+                }
+                if (!m_commandLine->isVisible()) {
+                    setCommandPanelVisible(true);
+                }
+                m_commandLine->typeIntoInput(text);
             });
     connect(view, &CadView::cursorWorldChanged, this,
             [this](const QPointF &point) {
@@ -1106,6 +1125,18 @@ void MainWindow::createActions()
                    QKeySequence(QStringLiteral("Ctrl+P")));
     connect(m_printAction, &QAction::triggered, this,
             [this] { requestPrint(); });
+    m_printFramesAction =
+        makeAction(QStringLiteral("布局图框打印"),
+                   QStringLiteral("print-frames"),
+                   QKeySequence(QStringLiteral("Ctrl+Shift+P")));
+    m_printFramesAction->setToolTip(
+        QStringLiteral("自动识别布局中的图框，每个图框一页打印  [%1]")
+            .arg(m_printFramesAction->shortcut().toString(
+                QKeySequence::NativeText)));
+    m_printFramesAction->setStatusTip(
+        QStringLiteral("自动识别布局中的图框，每个图框一页打印"));
+    connect(m_printFramesAction, &QAction::triggered, this,
+            [this] { printLayoutFrames(); });
 
     m_selectAction = makeToolAction(QStringLiteral("选择"),
                                     QStringLiteral("select"),
@@ -1284,6 +1315,16 @@ void MainWindow::createActions()
         makeAction(QStringLiteral("标注管理"),
                    QStringLiteral("annotations"));
     m_annotationManagerAction->setCheckable(true);
+    m_commandPanelAction = makeAction(
+        QStringLiteral("命令窗口"),
+        QString(),
+        QKeySequence(QStringLiteral("Ctrl+9")));
+    m_commandPanelAction->setCheckable(true);
+    m_commandPanelAction->setChecked(true);
+    m_commandPanelAction->setStatusTip(
+        QStringLiteral("显示或隐藏命令窗口，输入 ? 查看命令列表"));
+    connect(m_commandPanelAction, &QAction::toggled, this,
+            &MainWindow::setCommandPanelVisible);
 
     m_fitAction =
         makeAction(QStringLiteral("显示全图"), QStringLiteral("fit"),
@@ -1428,6 +1469,7 @@ void MainWindow::createInterface()
     toolbar->addAction(m_openAction);
     toolbar->addAction(m_saveAction);
     toolbar->addAction(m_printAction);
+    toolbar->addAction(m_printFramesAction);
     toolbar->addAction(m_layerPanelAction);
     toolbar->addAction(m_annotationManagerAction);
     toolbar->addAction(m_annotationSettingsAction);
@@ -1454,9 +1496,7 @@ void MainWindow::createInterface()
     toolbar->addAction(m_eraseAction);
     toolbar->addAction(m_deleteAllAction);
     toolbar->addSeparator();
-    toolbar->addAction(m_snapEnabledAction);
-    toolbar->addAction(m_orthoAction);
-    toolbar->addAction(m_gridAction);
+    // 捕捉 / 栅格 / 正交 / 命令行 只在状态栏与菜单里出现，不占用主工具栏。
     toolbar->addAction(m_annotationVisibilityAction);
     toolbar->addWidget(new QLabel(QStringLiteral("    ")));
 
@@ -1557,7 +1597,7 @@ void MainWindow::createInterface()
     m_measureToolbarAction->setText(QStringLiteral("测量工具"));
     m_measureToolbar->setVisible(
         interfaceSettings
-            .value(QStringLiteral("layout/measureToolbarVisible"), false)
+            .value(QStringLiteral("layout/measureToolbarVisible"), true)
             .toBool());
     connect(m_measureToolbar, &QToolBar::visibilityChanged, this,
             [](bool visible) {
@@ -1644,12 +1684,20 @@ void MainWindow::createInterface()
     m_layoutTabs->setExpanding(false);
     m_layoutTabs->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
     m_layoutTabs->setMovable(false);
-    m_layoutTabs->setContentsMargins(8, 4, 8, 4);
+    m_layoutTabs->setContentsMargins(0, 0, 0, 0);
     m_layoutTabs->setAutoFillBackground(false);
-    m_layoutTabs->setAttribute(Qt::WA_TranslucentBackground, true);
-    canvasLayout->addWidget(
-        m_layoutTabs, 0, 0, Qt::AlignBottom | Qt::AlignHCenter);
-    m_layoutTabs->raise();
+    // AutoCAD 风格：模型/布局标签固定在绘图区底部左侧
+    auto *spaceBar = new QWidget;
+    spaceBar->setObjectName(QStringLiteral("layoutTabsBar"));
+    auto *spaceBarLayout = new QHBoxLayout(spaceBar);
+    spaceBarLayout->setContentsMargins(8, 0, 8, 0);
+    spaceBarLayout->setSpacing(8);
+    auto *spaceLabel = new QLabel(QStringLiteral("空间"));
+    spaceLabel->setObjectName(QStringLiteral("layoutSpaceLabel"));
+    spaceBarLayout->addWidget(spaceLabel, 0, Qt::AlignVCenter);
+    spaceBarLayout->addWidget(m_layoutTabs, 0, Qt::AlignVCenter);
+    spaceBarLayout->addStretch(1);
+    canvasLayout->addWidget(spaceBar, 1, 0);
     connect(m_layoutTabs, &QTabBar::currentChanged, this,
             [this](int index) {
                 if (!m_view->document() || index < 0) {
@@ -1815,6 +1863,8 @@ void MainWindow::createInterface()
             &MainWindow::openDrawing);
     connect(m_startScreen, &StartScreen::removeRecentRequested, this,
             &MainWindow::removeRecentDrawing);
+    connect(m_startScreen, &StartScreen::clearRecentRequested, this,
+            &MainWindow::clearRecentDrawings);
     connect(m_startScreen, &StartScreen::motionEnabledChanged, this,
             [](bool enabled) {
                 QSettings settings = applicationSettings();
@@ -1822,6 +1872,8 @@ void MainWindow::createInterface()
                     QStringLiteral("startup/motionEnabled"), enabled);
                 settings.sync();
             });
+    connect(m_startScreen, &StartScreen::commandReferenceRequested, this,
+            &MainWindow::showCommandReference);
     m_centralStack = new QStackedWidget;
     m_centralStack->addWidget(m_startScreen);
     m_centralStack->addWidget(m_canvasPage);
@@ -1848,6 +1900,30 @@ void MainWindow::createInterface()
     documentTabsRow->addStretch();
     workspaceLayout->addLayout(documentTabsRow);
     workspaceLayout->addWidget(m_centralStack, 1);
+
+    // AutoCAD 风格命令行：绘图区之下、状态栏之上
+    m_commandLine = new CommandLine;
+    connect(m_commandLine, &CommandLine::commandSubmitted, this,
+            &MainWindow::executeCommand);
+    connect(m_commandLine, &CommandLine::escapeRequested, this, [this] {
+        if (m_view) {
+            m_view->setFocus();
+        }
+    });
+    connect(m_commandLine, &CommandLine::expandedChanged, this,
+            [this](bool expanded) {
+                const QSignalBlocker blocker(m_commandPanelAction);
+                m_commandPanelAction->setChecked(expanded);
+            });
+    connect(m_commandLine, &CommandLine::inputEdited, this,
+            &MainWindow::updateCommandSuggestions);
+    m_commandLine->setCompletions(commandCompletions());
+    m_commandLine->appendMessage(
+        QStringLiteral("速看CAD 命令模式已启用 · 输入 ? 查看命令 · "
+                       "回车重复上一条 · ↑↓ 翻历史"),
+        CommandLine::MessageKind::Hint);
+    workspaceLayout->addWidget(m_commandLine);
+
     setCentralWidget(workspaceShell);
     m_centralStack->setCurrentWidget(m_startScreen);
     connect(m_documentTabs, &QTabBar::currentChanged, this,
@@ -1876,6 +1952,47 @@ void MainWindow::createInterface()
     m_progress->setTextVisible(false);
     m_progress->hide();
     statusBar()->addWidget(m_coordinateLabel, 1);
+
+    // 状态栏绘图辅助开关（同 AutoCAD 底部捕获/栅格/正交）
+    const auto makeStatusToggle =
+        [this](const QString &text, QAction *action,
+               const QString &tip) {
+            auto *button = new QToolButton;
+            button->setObjectName(QStringLiteral("statusToggle"));
+            button->setText(text);
+            button->setToolTip(tip);
+            button->setCheckable(true);
+            button->setCursor(Qt::PointingHandCursor);
+            button->setFocusPolicy(Qt::NoFocus);
+            button->setChecked(action->isChecked());
+            connect(button, &QToolButton::clicked, action,
+                    &QAction::trigger);
+            connect(action, &QAction::toggled, button,
+                    [button](bool checked) {
+                        const QSignalBlocker blocker(button);
+                        button->setChecked(checked);
+                    });
+            statusBar()->addPermanentWidget(button);
+            return button;
+        };
+    makeStatusToggle(QStringLiteral("捕捉"), m_snapEnabledAction,
+                     QStringLiteral("对象捕捉开关 (F3)"));
+    makeStatusToggle(QStringLiteral("栅格"), m_gridAction,
+                     QStringLiteral("栅格显示开关 (F7)"));
+    makeStatusToggle(QStringLiteral("正交"), m_orthoAction,
+                     QStringLiteral("正交约束开关 (F8)"));
+    m_commandPanelButton = new QToolButton;
+    m_commandPanelButton->setObjectName(QStringLiteral("statusToggle"));
+    m_commandPanelButton->setText(QStringLiteral("命令行"));
+    m_commandPanelButton->setToolTip(
+        QStringLiteral("显示 / 隐藏命令窗口 (Ctrl+9)"));
+    m_commandPanelButton->setCheckable(true);
+    m_commandPanelButton->setChecked(true);
+    m_commandPanelButton->setCursor(Qt::PointingHandCursor);
+    m_commandPanelButton->setFocusPolicy(Qt::NoFocus);
+    connect(m_commandPanelButton, &QToolButton::clicked, this,
+            [this](bool checked) { setCommandPanelVisible(checked); });
+    statusBar()->addPermanentWidget(m_commandPanelButton);
     statusBar()->addPermanentWidget(m_scaleLabel);
     statusBar()->addPermanentWidget(m_zoomLabel);
     statusBar()->addPermanentWidget(m_progress);
@@ -1889,6 +2006,7 @@ void MainWindow::createMenus()
     fileMenu->addAction(m_saveAsAction);
     fileMenu->addSeparator();
     fileMenu->addAction(m_printAction);
+    fileMenu->addAction(m_printFramesAction);
     fileMenu->addAction(m_exportSvgAction);
     fileMenu->addSeparator();
     QAction *quit = fileMenu->addAction(QStringLiteral("退出"));
@@ -2028,6 +2146,12 @@ void MainWindow::createMenus()
     viewMenu->addAction(m_layerPanelAction);
     viewMenu->addAction(m_annotationManagerAction);
     viewMenu->addAction(m_measureToolbarAction);
+    viewMenu->addAction(m_commandPanelAction);
+    QAction *commandReference =
+        viewMenu->addAction(QStringLiteral("命令与快捷键列表"));
+    commandReference->setShortcut(QKeySequence(Qt::Key_F1));
+    connect(commandReference, &QAction::triggered, this,
+            &MainWindow::showCommandReference);
     auto *measureDockMenu =
         viewMenu->addMenu(QStringLiteral("测量工具停靠位置"));
     auto *measureDockGroup = new QActionGroup(this);
@@ -2096,11 +2220,154 @@ void MainWindow::createMenus()
     connect(about, &QAction::triggered, this, &MainWindow::showAbout);
 }
 
+void MainWindow::appendChromeStyles(QString &themeStyleSheet)
+{
+    // 命令行、底部空间标签、状态栏开关的配色跟随主题
+    struct ChromeColors {
+        QString panel;
+        QString log;
+        QString border;
+        QString text;
+        QString muted;
+        QString accent;
+        QString error;
+        QString success;
+        QString accentSoft;
+    };
+    ChromeColors chrome;
+    switch (m_cadTheme) {
+    case CadTheme::Light:
+        chrome = {QStringLiteral("#f1f4f6"),
+                  QStringLiteral("#ffffff"),
+                  QStringLiteral("#c3ced5"),
+                  QStringLiteral("#1d2c35"),
+                  QStringLiteral("#5f7079"),
+                  QStringLiteral("#1f6c92"),
+                  QStringLiteral("#b23b33"),
+                  QStringLiteral("#1c7a4d"),
+                  QStringLiteral("#dceaf3")};
+        break;
+    case CadTheme::Gray:
+        chrome = {QStringLiteral("#2a3035"),
+                  QStringLiteral("#1f2529"),
+                  QStringLiteral("#4a555d"),
+                  QStringLiteral("#d2dce2"),
+                  QStringLiteral("#9aa7af"),
+                  QStringLiteral("#84c3e0"),
+                  QStringLiteral("#e08076"),
+                  QStringLiteral("#6fd3a2"),
+                  QStringLiteral("#324954")};
+        break;
+    case CadTheme::Blueprint:
+        chrome = {QStringLiteral("#0f2b3f"),
+                  QStringLiteral("#0a2132"),
+                  QStringLiteral("#2e5771"),
+                  QStringLiteral("#d3e9f5"),
+                  QStringLiteral("#8fb4c8"),
+                  QStringLiteral("#66cfe8"),
+                  QStringLiteral("#eba08f"),
+                  QStringLiteral("#6cd8b0"),
+                  QStringLiteral("#1d435c")};
+        break;
+    case CadTheme::Dark:
+    default:
+        chrome = {QStringLiteral("#121a20"),
+                  QStringLiteral("#0b1013"),
+                  QStringLiteral("#2a363e"),
+                  QStringLiteral("#c6d2d9"),
+                  QStringLiteral("#7d8b95"),
+                  QStringLiteral("#5fb6e0"),
+                  QStringLiteral("#e0746b"),
+                  QStringLiteral("#55cf9b"),
+                  QStringLiteral("#1d3542")};
+        break;
+    }
+    QString chromeStyle = QStringLiteral(R"(
+        QWidget#commandPanel {
+            background: @panel; border-top: 1px solid @border;
+        }
+        QTextEdit#commandLog {
+            background: @log; border: 1px solid @border;
+            border-radius: 4px; color: @text;
+            selection-background-color: @accentSoft;
+        }
+        QLabel#commandPrompt {
+            color: @accent; font-weight: 600; padding: 0 2px;
+        }
+        QLineEdit#commandInput {
+            background: @log; border: 1px solid @border;
+            border-radius: 4px; padding: 3px 9px; color: @text;
+            selection-background-color: @accentSoft;
+        }
+        QLineEdit#commandInput:focus { border-color: @accent; }
+        QLabel#commandHint { color: @muted; font-size: 11px; }
+        QToolButton#commandToggle {
+            background: transparent; color: @muted;
+            border: 1px solid transparent; border-radius: 4px;
+            padding: 0; font-size: 12px;
+        }
+        QToolButton#commandToggle:hover {
+            background: @accentSoft; color: @accent;
+        }
+        QWidget#layoutTabsBar {
+            background: @panel; border-top: 1px solid @border;
+        }
+        QLabel#layoutSpaceLabel {
+            color: @muted; font-size: 11px; letter-spacing: 1px;
+        }
+        QTabBar#layoutTabs::tab {
+            background: transparent; color: @muted;
+            border: 1px solid transparent; border-bottom: 2px solid transparent;
+            border-top-left-radius: 4px; border-top-right-radius: 4px;
+            padding: 3px 18px; margin: 2px 1px 0 1px; min-width: 56px;
+        }
+        QTabBar#layoutTabs::tab:hover {
+            background: @accentSoft; color: @text;
+        }
+        QTabBar#layoutTabs::tab:selected {
+            background: @accentSoft; color: @text;
+            border-color: @border; border-bottom: 2px solid @accent;
+        }
+        QToolButton#statusToggle {
+            background: transparent; color: @muted;
+            border: 1px solid transparent; border-radius: 3px;
+            padding: 1px 8px; margin: 1px 2px; font-size: 11px;
+        }
+        QToolButton#statusToggle:hover {
+            background: @accentSoft; color: @text;
+        }
+        QToolButton#statusToggle:checked {
+            background: @accentSoft; color: @accent;
+            border-color: @accent; font-weight: 600;
+        }
+    )");
+    const auto paintToken = [&chromeStyle](const char *token,
+                                           const QString &value) {
+        chromeStyle.replace(QLatin1String(token), value);
+    };
+    paintToken("@log", chrome.log);
+    paintToken("@panel", chrome.panel);
+    paintToken("@border", chrome.border);
+    paintToken("@text", chrome.text);
+    paintToken("@muted", chrome.muted);
+    paintToken("@accentSoft", chrome.accentSoft);
+    paintToken("@accent", chrome.accent);
+    paintToken("@error", chrome.error);
+    paintToken("@success", chrome.success);
+    themeStyleSheet += chromeStyle;
+    if (m_commandLine) {
+        m_commandLine->setLogColors(
+            QColor(chrome.text), QColor(chrome.muted),
+            QColor(chrome.accent), QColor(chrome.error),
+            QColor(chrome.success));
+    }
+}
+
 void MainWindow::applyStyle()
 {
     refreshActionIcons();
     if (m_cadTheme == CadTheme::Light) {
-        setStyleSheet(QStringLiteral(R"(
+        QString lightStyle = QStringLiteral(R"(
             QMainWindow { background: #eef1f3; color: #17252d; }
             QDialog { background: #ffffff; color: #17232b; }
             QDialog QLabel { color: #17232b; }
@@ -2352,7 +2619,9 @@ void MainWindow::applyStyle()
             QFrame#sidePanel {
                 border: 1px solid #d5dde2; border-radius: 6px;
             }
-        )"));
+        )");
+        appendChromeStyles(lightStyle);
+        setStyleSheet(lightStyle);
         if (m_startScreen) {
             m_startScreen->setCadTheme(false);
         }
@@ -2399,97 +2668,117 @@ void MainWindow::applyStyle()
         QDialog QLabel#panelTitle { color: #102f40; }
         QDialog QLabel#hintLabel { color: #52646f; }
         QMenuBar { background: #11161a; color: #b9c2c9; padding: 2px 6px; border-bottom: 1px solid #252c32; }
-        QMenuBar::item { padding: 5px 10px; background: transparent; }
-        QMenuBar::item:selected { background: #273038; border-radius: 1px; }
-        QMenu { background: #151a1f; color: #d7dde2; border: 1px solid #343e46; padding: 3px; }
-        QMenu::item { padding: 6px 26px 6px 10px; border-radius: 1px; }
-        QMenu::item:selected { background: #2b4658; border-left: 2px solid #5da7d3; }
-        QMenu::separator { height: 1px; background: #303941; margin: 4px 8px; }
+        QMenuBar::item { padding: 5px 10px; background: transparent; border-radius: 4px; }
+        QMenuBar::item:selected { background: #273038; }
+        QMenu { background: #151a1f; color: #d7dde2; border: 1px solid #343e46; border-radius: 8px; padding: 5px; }
+        QMenu::item { padding: 6px 26px 6px 12px; border-radius: 5px; }
+        QMenu::item:selected { background: #2b4658; }
+        QMenu::item:disabled { color: #5d6870; }
+        QMenu::separator { height: 1px; background: #303941; margin: 5px 10px; }
         QToolBar#mainToolbar, QToolBar#measureToolbar {
             background: #1b252c; border: none;
             border-bottom: 1px solid #3a4c57;
-            spacing: 2px; padding: 6px 8px;
+            spacing: 3px; padding: 6px 10px;
         }
         QToolBar#mainToolbar::separator,
         QToolBar#measureToolbar::separator {
             background: #60717d; width: 1px;
-            margin: 5px 6px;
+            margin: 6px 7px;
         }
         QToolButton {
             background: transparent; border: 1px solid transparent;
-            border-radius: 1px; padding: 5px; color: #b8c2ca;
+            border-radius: 6px; padding: 6px; color: #b8c2ca;
         }
-        QToolButton:hover { background: #252d34; border-color: #3b4650; }
-        QToolButton:checked { background: #263b49; border-color: #5da7d3; }
+        QToolButton:hover { background: #2a353e; border-color: #46545f; }
+        QToolButton:pressed { background: #22303a; }
+        QToolButton:checked {
+            background: #24455a; border-color: #5da7d3; color: #eaf5fb;
+        }
         QToolButton#styleChoice {
             background: #10161a; border: 1px solid #2e3a42;
-            border-radius: 2px; color: #aeb9c1; padding: 5px;
+            border-radius: 6px; color: #aeb9c1; padding: 6px 10px;
         }
         QToolButton#styleChoice:hover {
             background: #19242b; border-color: #5b8299;
         }
         QToolButton#styleChoice:checked {
-            background: #18392b; border: 2px solid #37d67a;
+            background: #16412e; border: 1px solid #37d67a;
             color: #dff8e9;
         }
         QFrame#sidePanel { background: #11161a; border: none; }
-        QFrame#canvasFrame { background: #000000; border: 1px solid #2a3239; }
+        QFrame#canvasFrame {
+            background: #000000; border: 1px solid #2a3239;
+            border-radius: 8px;
+        }
         QDockWidget { background: #11161a; color: #d7dde2; }
         QDockWidget::title {
             background: #171d22; border-bottom: 1px solid #303941;
-            color: #aeb8c0; padding: 7px 9px; text-align: left;
+            color: #aeb8c0; padding: 8px 10px; text-align: left;
         }
         QLabel#panelTitle { color: #edf1f3; font-size: 12px; font-weight: 600; letter-spacing: 1px; }
         QLabel#documentTitle { color: #edf1f3; font-weight: 600; font-size: 13px; }
         QLabel#documentMeta { color: #7f8b94; font-size: 10px; }
         QLabel#hintLabel { color: #77838d; font-size: 11px; }
         QLabel#summaryLabel {
-            background: #0d1114; border: 1px solid #2b343b; border-radius: 1px;
-            padding: 9px; color: #98a4ad;
+            background: #0d1114; border: 1px solid #2b343b; border-radius: 8px;
+            padding: 10px; color: #98a4ad;
         }
         QTreeWidget, QTableWidget {
             background: #0c1013; alternate-background-color: #101519;
-            border: 1px solid #2a333a; border-radius: 1px;
+            border: 1px solid #2a333a; border-radius: 8px;
             color: #c5ced5; selection-background-color: #263f50;
-            gridline-color: #20282e;
+            gridline-color: #20282e; outline: none;
         }
-        QTreeWidget::item, QTableWidget::item { padding: 5px; }
+        QTreeWidget::item, QTableWidget::item { padding: 5px; border-radius: 3px; }
         QHeaderView::section {
             background: #171d22; color: #85929c; border: none;
-            border-bottom: 1px solid #303941; padding: 6px;
+            border-bottom: 1px solid #303941; padding: 7px;
         }
         QComboBox {
-            background: #171d22; border: 1px solid #35404a; border-radius: 1px;
-            padding: 5px 8px; color: #d5dce1;
+            background: #171d22; border: 1px solid #35404a; border-radius: 6px;
+            padding: 5px 10px; color: #d5dce1;
         }
+        QComboBox:hover { border-color: #4d606d; }
         QComboBox::drop-down { border: none; width: 20px; }
         QComboBox QAbstractItemView {
             background: #151a1f; color: #d7dde2; selection-background-color: #2b4658;
+            border: 1px solid #343e46; border-radius: 6px;
+            outline: none;
         }
         QPushButton {
-            background: #1a2127; border: 1px solid #36414a; border-radius: 1px;
-            color: #cbd3d9; padding: 6px 12px;
+            background: #1e272e; border: 1px solid #36414a; border-radius: 6px;
+            color: #cbd3d9; padding: 6px 14px;
         }
-        QPushButton:hover { background: #27343e; border-color: #5b8299; }
+        QPushButton:hover { background: #283743; border-color: #5b8299; }
+        QPushButton:pressed { background: #1a242c; }
+        QPushButton:disabled { color: #57626b; border-color: #2a333a; }
+        QPushButton#addPrintPageButton {
+            background: #16412e; border: 1px solid #2f7a52; color: #dff8e9;
+        }
+        QPushButton#addPrintPageButton:hover { background: #1c5239; border-color: #45c07f; }
         QStatusBar {
-            background: #ffffff; color: #263842;
-            border-top: 1px solid #c5d0d7;
+            background: #11161a; color: #aab5bd;
+            border-top: 1px solid #252c32;
         }
-        QStatusBar QLabel { padding: 2px 8px; }
+        QStatusBar QLabel { padding: 3px 10px; }
         QCheckBox { color: #bdc6cd; spacing: 6px; }
         QSplitter::handle { background: #2b343b; }
-        QScrollBar:vertical { background: #0d1114; width: 10px; }
-        QScrollBar::handle:vertical { background: #35424b; border-radius: 0; min-height: 24px; }
+        QScrollBar:vertical { background: transparent; width: 11px; margin: 2px; }
+        QScrollBar::handle:vertical { background: #35424b; border-radius: 4px; min-height: 28px; }
+        QScrollBar::handle:vertical:hover { background: #4a5a66; }
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
-        QScrollBar:horizontal { background: #0d1114; height: 10px; }
-        QScrollBar::handle:horizontal { background: #35424b; border-radius: 0; min-width: 24px; }
+        QScrollBar:horizontal { background: transparent; height: 11px; margin: 2px; }
+        QScrollBar::handle:horizontal { background: #35424b; border-radius: 4px; min-width: 28px; }
+        QScrollBar::handle:horizontal:hover { background: #4a5a66; }
         QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
-        QProgressBar { background: #20282e; border: none; border-radius: 0; height: 4px; }
-        QProgressBar::chunk { background: #5da7d3; }
+        QProgressBar {
+            background: #20282e; border: none; border-radius: 3px; height: 6px;
+        }
+        QProgressBar::chunk { background: #5da7d3; border-radius: 3px; }
         QTabBar::tab {
             background: #151b20; color: #85929b; border: 1px solid #303941;
-            border-bottom: none; padding: 5px 18px; margin: 0 1px;
-            border-top-left-radius: 1px; border-top-right-radius: 1px;
+            border-bottom: none; padding: 6px 18px; margin: 0 1px;
+            border-top-left-radius: 6px; border-top-right-radius: 6px;
         }
         QTabBar::tab:selected {
             background: #273d4b; color: #eef3f5;
@@ -2504,8 +2793,8 @@ void MainWindow::applyStyle()
         QTabBar#documentTabs::tab {
             background: #11191f; color: #8e9ca5;
             border: 1px solid #2d3b44; border-bottom: none;
-            border-top-left-radius: 3px; border-top-right-radius: 3px;
-            padding: 4px 30px 3px 13px; margin: 1px 2px 0 0;
+            border-top-left-radius: 7px; border-top-right-radius: 7px;
+            padding: 5px 30px 4px 13px; margin: 1px 2px 0 0;
             min-width: 120px;
         }
         QTabBar#documentTabs::tab:hover {
@@ -2516,7 +2805,7 @@ void MainWindow::applyStyle()
             background: #203846; color: #ffffff;
             border-top: 2px solid #62b4dd;
             border-left-color: #456879; border-right-color: #456879;
-            padding-top: 3px;
+            padding-top: 4px;
         }
         QTabBar#documentTabs::close-button {
             image: url(:/icons/close-tab.svg);
@@ -2798,6 +3087,8 @@ void MainWindow::applyStyle()
     } else if (m_cadTheme == CadTheme::Blueprint) {
         themeStyleSheet += blueprintInterface;
     }
+
+    appendChromeStyles(themeStyleSheet);
     setStyleSheet(themeStyleSheet);
     if (m_startScreen) {
         m_startScreen->setCadTheme(true);
@@ -4932,6 +5223,165 @@ void MainWindow::handlePrintAreaCanceled()
     });
 }
 
+// Detect title-block frames (图框) in a paper-space layout. Frames are
+// axis-aligned rectangles drawn as closed 4-vertex polylines whose size is
+// compatible with standard sheet formats (roughly A4..A0 with margins).
+QVector<QRectF> MainWindow::detectLayoutFrames(
+    const QString &spaceName) const
+{
+    QVector<QRectF> frames;
+    const std::shared_ptr<CadDocument> document =
+        m_view ? m_view->document() : nullptr;
+    if (!document) {
+        return frames;
+    }
+    const QVector<CadEntity> &entities =
+        document->layoutEntities.value(spaceName);
+    for (const CadEntity &entity : entities) {
+        if (entity.type != CadEntityType::Polyline
+            && entity.type != CadEntityType::Segment) {
+            continue;
+        }
+        if (entity.points.size() < 4 || entity.points.size() > 5) {
+            continue;
+        }
+        QPolygonF polygon;
+        polygon.reserve(4);
+        for (const QPointF &point : entity.points) {
+            if (polygon.isEmpty() || polygon.last() != point) {
+                polygon.append(point);
+            }
+        }
+        if (polygon.size() == 5 && polygon.first() == polygon.last()) {
+            polygon.removeLast();
+        }
+        if (polygon.size() != 4) {
+            continue;
+        }
+        // Axis-aligned rectangle: every edge parallel to X or Y axis.
+        bool rectangle = true;
+        double minLength = std::numeric_limits<double>::max();
+        double maxLength = 0.0;
+        for (int index = 0; index < 4 && rectangle; ++index) {
+            const QPointF delta =
+                polygon[(index + 1) % 4] - polygon[index];
+            const double length = std::hypot(delta.x(), delta.y());
+            if (length < 1.0e-9
+                || (qAbs(delta.x()) > 1.0e-6
+                    && qAbs(delta.y()) > 1.0e-6)) {
+                rectangle = false;
+                break;
+            }
+            minLength = qMin(minLength, length);
+            maxLength = qMax(maxLength, length);
+        }
+        if (!rectangle) {
+            continue;
+        }
+        // Sheet size window: A4 (210) up to oversized A0+ plots, in paper
+        // millimetres. Ignore hairline borders (viewport frames etc.).
+        const QRectF bounds = polygon.boundingRect();
+        if (qMin(bounds.width(), bounds.height()) < 148.0
+            || qMax(bounds.width(), bounds.height()) < 210.0
+            || qMax(bounds.width(), bounds.height()) > 2600.0
+            || qMin(bounds.width(), bounds.height()) > 2000.0) {
+            continue;
+        }
+        frames.append(bounds);
+    }
+    // Keep only the outermost rectangles: a sheet often nests an inner
+    // trim frame or a viewport border inside the title frame.
+    QVector<QRectF> kept;
+    for (const QRectF &candidate : frames) {
+        bool insideAnother = false;
+        for (const QRectF &other : frames) {
+            if (other != candidate
+                && other.contains(candidate.adjusted(2.0, 2.0,
+                                                     -2.0, -2.0))) {
+                insideAnother = true;
+                break;
+            }
+        }
+        if (!insideAnother) {
+            kept.append(candidate);
+        }
+    }
+    frames = kept;
+    // De-duplicate near-identical rectangles (drawn twice / hatch border).
+    QVector<QRectF> unique;
+    for (const QRectF &candidate : frames) {
+        bool duplicate = false;
+        for (const QRectF &other : unique) {
+            if (candidate.adjusted(-3.0, -3.0, 3.0, 3.0)
+                    .intersects(other)
+                && other.adjusted(-3.0, -3.0, 3.0, 3.0)
+                       .intersects(candidate)
+                && (candidate.united(other).width()
+                        * candidate.united(other).height())
+                    < 1.21 * qMax(candidate.width() * candidate.height(),
+                                  other.width() * other.height())) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (!duplicate) {
+            unique.append(candidate);
+        }
+    }
+    frames = unique;
+    // Reading order: rows top-to-bottom (paper Y grows upward in most
+    // layouts; use max-Y of the row), within a row left-to-right.
+    std::sort(frames.begin(), frames.end(),
+              [](const QRectF &a, const QRectF &b) {
+                  const double midA = a.center().y();
+                  const double midB = b.center().y();
+                  const double tolerance =
+                      0.5 * qMin(a.height(), b.height());
+                  if (qAbs(midA - midB) > tolerance) {
+                      return midA > midB;
+                  }
+                  return a.center().x() < b.center().x();
+              });
+    return frames;
+}
+
+void MainWindow::printLayoutFrames()
+{
+    if (!m_view || !m_view->document()) {
+        return;
+    }
+    const std::shared_ptr<CadDocument> document = m_view->document();
+    QString spaceName = m_view->activeSpace();
+    if (spaceName.isEmpty()
+        || spaceName == QStringLiteral("模型")) {
+        if (document->layouts.isEmpty()) {
+            statusBar()->showMessage(
+                QStringLiteral("当前图纸没有布局空间，无法按图框打印"),
+                4000);
+            return;
+        }
+        spaceName = document->layouts.first();
+    }
+    const QVector<QRectF> frames = detectLayoutFrames(spaceName);
+    if (frames.isEmpty()) {
+        statusBar()->showMessage(
+            QStringLiteral("未在布局“%1”中检测到图框（需要闭合矩形图框线）")
+                .arg(spaceName),
+            5000);
+        return;
+    }
+    m_printSession = PrintSession();
+    m_printSession.active = true;
+    for (const QRectF &frame : frames) {
+        m_printSession.pages.append({spaceName, frame});
+    }
+    m_printSession.currentPage = 0;
+    statusBar()->showMessage(
+        QStringLiteral("已按图框生成 %1 页打印预览").arg(frames.size()),
+        4000);
+    showPrintPreview();
+}
+
 void MainWindow::showPrintPreview()
 {
     if (!m_view->document() || m_printSession.pages.isEmpty()) {
@@ -5010,6 +5460,14 @@ void MainWindow::showPrintPreview()
         new QPushButton(QStringLiteral("＋ 添加一页并框选"));
     addPageButton->setObjectName(
         QStringLiteral("addPrintPageButton"));
+    auto *addFramesButton =
+        new QPushButton(QStringLiteral("⧉ 一键添加布局图框"));
+    addFramesButton->setObjectName(
+        QStringLiteral("addLayoutFramesButton"));
+    addFramesButton->setToolTip(
+        QStringLiteral("自动识别布局中的图框，每个图框追加为一页"));
+    addFramesButton->setEnabled(
+        !m_view->document()->layouts.isEmpty());
     auto *removePageButton =
         new QPushButton(QStringLiteral("删除本页"));
     removePageButton->setObjectName(
@@ -5024,6 +5482,7 @@ void MainWindow::showPrintPreview()
     settingsLayout->addWidget(pageSection);
     settingsLayout->addLayout(pageRow);
     settingsLayout->addWidget(addPageButton);
+    settingsLayout->addWidget(addFramesButton);
 
     auto *printerCombo = new QComboBox;
     auto *refreshPrinterButton =
@@ -5447,6 +5906,61 @@ void MainWindow::showPrintPreview()
         removePageButton->setEnabled(m_printSession.pages.size() > 1);
         updatePreview();
     });
+    connect(addFramesButton, &QPushButton::clicked, &dialog, [&] {
+        QString spaceName;
+        const int pageIndex = pageCombo->currentIndex();
+        if (pageIndex >= 0
+            && pageIndex < m_printSession.pages.size()) {
+            spaceName = m_printSession.pages[pageIndex].spaceName;
+        }
+        if (spaceName.isEmpty()
+            || spaceName == QStringLiteral("模型")) {
+            spaceName = m_view->activeSpace();
+        }
+        if (spaceName.isEmpty()
+            || spaceName == QStringLiteral("模型")) {
+            const QStringList &layouts = m_view->document()->layouts;
+            spaceName = layouts.isEmpty()
+                ? QString() : layouts.first();
+        }
+        if (spaceName.isEmpty()) {
+            statusBar()->showMessage(
+                QStringLiteral("当前图纸没有布局空间"), 4000);
+            return;
+        }
+        const QVector<QRectF> frames = detectLayoutFrames(spaceName);
+        if (frames.isEmpty()) {
+            statusBar()->showMessage(
+                QStringLiteral("未在布局“%1”中检测到图框").arg(spaceName),
+                5000);
+            return;
+        }
+        for (const QRectF &frame : frames) {
+            m_printSession.pages.append({spaceName, frame});
+        }
+        m_printSession.currentPage = m_printSession.pages.size()
+            - frames.size();
+        const QSignalBlocker blocker(pageCombo);
+        pageCombo->clear();
+        for (int index = 0; index < m_printSession.pages.size();
+             ++index) {
+            const CadPrintPage &page = m_printSession.pages[index];
+            pageCombo->addItem(
+                QStringLiteral("第 %1 页 · %2")
+                    .arg(index + 1)
+                    .arg(page.spaceName.isEmpty()
+                             ? QStringLiteral("模型")
+                             : page.spaceName),
+                index);
+        }
+        pageCombo->setCurrentIndex(m_printSession.currentPage);
+        removePageButton->setEnabled(m_printSession.pages.size() > 1);
+        updatePreview();
+        statusBar()->showMessage(
+            QStringLiteral("已追加布局“%1”的 %2 个图框页")
+                .arg(spaceName).arg(frames.size()),
+            4000);
+    });
     connect(addPageButton, &QPushButton::clicked, &dialog, [&] {
         m_printSession.paperSize =
             paperCombo->currentData().toInt();
@@ -5743,6 +6257,28 @@ void MainWindow::removeRecentDrawing(const QString &path)
     }
 }
 
+void MainWindow::clearRecentDrawings()
+{
+    QSettings settings = cacheSettings();
+    const int count =
+        settings.value(QStringLiteral("recentDrawings")).toList().size();
+    if (count <= 0) {
+        statusBar()->showMessage(
+            QStringLiteral("最近打开列表已经是空的"), 4000);
+        return;
+    }
+    settings.setValue(QStringLiteral("recentDrawings"), QVariantList());
+    settings.sync();
+    // refreshStartScreen 会顺带清理不再属于最近列表的本地缓存
+    refreshStartScreen();
+    statusBar()->showMessage(
+        QStringLiteral("已清除最近打开列表（%1 项），并清理对应本地缓存")
+            .arg(count),
+        6000);
+    echoCommandOk(
+        QStringLiteral("✓ 已清除最近打开列表（%1 项）").arg(count));
+}
+
 void MainWindow::pruneSystemCachesToRecent(
     const QVariantList &recentRecords)
 {
@@ -5966,6 +6502,672 @@ void MainWindow::setDirty(bool dirty)
     } else if (!dirty && title.startsWith(QLatin1Char('*'))) {
         setWindowTitle(title.mid(1));
     }
+}
+
+namespace {
+
+struct CommandSpec {
+    const char *id;
+    const char *tokens;
+    const char *title;
+    const char *usage;
+};
+
+const QVector<CommandSpec> &commandSpecTable()
+{
+    static const QVector<CommandSpec> specs = {
+        {"SELECT", "SELECT SEL 选择", "选择",
+         "退出当前工具，回到浏览/选择状态"},
+        {"ERASE", "E ERASE DEL 删除", "删除标注",
+         "单击标注删除，拖动框选批量删除"},
+        {"ALIGNED", "L LINE DL DAL DIMALIGNED 对齐 对齐尺寸", "对齐尺寸",
+         "两点间距离，尺寸线与两点连线平行"},
+        {"LINEAR", "DLI LINEAR DIMLINEAR 线性 线性尺寸", "线性尺寸",
+         "自动取两点的水平或垂直距离"},
+        {"CONTINUOUS", "DCO CONTINUOUS DIMCONTINUE 连续 连续标注", "连续标注",
+         "连续选点生成建筑尺寸链"},
+        {"BATCH", "DB BATCH DIMBATCH 批量 批量标注", "批量标注",
+         "连续选点后一次生成各段尺寸"},
+        {"RECT", "REC RECT RECTANG RECTANGLE 矩形", "矩形面积",
+         "两个对角点，输出面积与周长"},
+        {"POLYGON", "POL POLYGON 多边形", "多边形面积",
+         "逐点描边，单击起点或双击闭合"},
+        {"CIRCLEAREA", "C CIR CIRCLE 圆 圆面积", "圆面积",
+         "圆周上三点确定圆，输出面积与周长"},
+        {"FILLED", "H FILL FILLED 填充 填充面积", "填充面积",
+         "单击闭合填充或轮廓内部"},
+        {"SIDEAREA", "SA SIDEAREA 侧面积", "侧面积",
+         "沿墙线连续选点，输出总长与侧面积"},
+        {"AREAOFFSET", "O OFFSET 偏移 偏移面积", "偏移面积",
+         "按偏移距离生成闭合边界并算面积"},
+        {"RADIUS", "RA RADIUS RAD 半径", "半径",
+         "圆周上三点，标注 R 值"},
+        {"DIAMETER", "DDI DIA DIAMETER 直径", "直径",
+         "圆心与圆周点，标注 ⌀ 值"},
+        {"ANGLE", "DAN ANG ANGLE DIMANGULAR 角度", "角度",
+         "三点夹角，标注 ∠ 值"},
+        {"ARCLENGTH", "DAR ARC ARCLENGTH DIMARC 弧长", "弧长",
+         "沿弧段测量弧长"},
+        {"COORD", "ID COORD COORDS 坐标", "坐标",
+         "拾取点坐标，写入测量列表"},
+        {"POINTLINE", "DI DIST 点线距离", "点到线距离",
+         "一点到指定线段的垂直距离"},
+        {"FIXEDDIST", "FD FIXEDDIST 定距", "定距偏移",
+         "以固定距离偏移生成平行线"},
+        {"TEXT", "T DT TEXT 文字", "文字标注",
+         "在图上点击位置后输入文字"},
+        {"CALIBRATE", "CAL CALIBRATE 校准 比例", "比例校准",
+         "用已知长度反算图纸比例"},
+        {"ZOOM", "Z ZOOM 缩放", "缩放",
+         "Z E 范围 · Z W 窗口 · Z I 放大 · Z O 缩小"},
+        {"FIT", "FIT ZE 全图 显示全图", "显示全图",
+         "充满窗口显示整张图纸"},
+        {"PAN", "P PAN 平移", "平移",
+         "空格或中键拖动平移，滚轮缩放"},
+        {"REGEN", "RE REGEN 重画", "重画",
+         "清除缓存并重绘当前视图"},
+        {"GRID", "GRID F7 栅格", "栅格",
+         "开 / 关背景栅格"},
+        {"SNAP", "SNAP OSNAP 捕捉", "对象捕捉",
+         "开 / 关对象捕捉"},
+        {"ORTHO", "OR ORTHO F8 正交", "正交",
+         "开 / 关正交约束"},
+        {"LAYER", "LA LAYER 图层", "图层管理",
+         "打开图层面板"},
+        {"UNITS", "UN UNITS 单位", "单位与精度",
+         "查看当前单位，可在右侧面板修改"},
+        {"SETTINGS", "OP OPTIONS DS DIMSTYLE SETTINGS 设置", "标注设置",
+         "打开标注样式与显示设置"},
+        {"PLOT", "PLOT PRINT 打印", "打印预览",
+         "框选打印范围并进入打印预览"},
+        {"PLOTFRAMES", "PF PLOTFRAMES 图框打印", "布局图框打印",
+         "布局中每个图框输出一页"},
+        {"PREVIEW", "PREVIEW 打印预览", "打印预览",
+         "打开打印预览面板"},
+        {"SAVE", "SAVE QSAVE 保存", "保存标注",
+         "保存当前图纸的测量标注"},
+        {"SAVEAS", "SAVEAS 另存为", "另存标注",
+         "将测量标注另存为文件"},
+        {"OPEN", "OPEN 打开", "打开图纸",
+         "选择 DWG / DXF / PDF 文件"},
+        {"CLOSE", "CLOSE 关闭", "关闭图纸",
+         "关闭当前图纸标签"},
+        {"UNDO", "U UNDO 撤销", "撤销",
+         "撤销上一步标注操作"},
+        {"REDO", "REDO 重做", "重做",
+         "重做被撤销的标注操作"},
+        {"MODEL", "MO MODEL 模型", "模型空间",
+         "切换到模型空间"},
+        {"LAYOUT", "LO LAYOUT 布局", "布局空间",
+         "切换到下一个布局"},
+        {"ANNOTOGGLE", "ANNO 标注显示", "标注显示",
+         "显示 / 隐藏全部标注"},
+        {"THEME", "THEME 主题", "切换主题",
+         "深色 / 浅色 / 深灰 / 蓝图轮换"},
+        {"VERSION", "VER VERSION 版本", "版本信息",
+         "查看版本与当前图纸信息"},
+        {"HELP", "? HELP 帮助 命令", "命令列表",
+         "列出全部命令、别名与用途"},
+        {"QUIT", "QUIT EXIT 退出", "退出程序",
+         "关闭速看CAD"}
+    };
+    return specs;
+}
+
+QStringList commandTokens(const CommandSpec &spec)
+{
+    QStringList tokens;
+    const QString raw = QString::fromUtf8(spec.tokens);
+    for (const QString &token :
+         raw.split(QLatin1Char(' '), Qt::SkipEmptyParts)) {
+        tokens.append(token.toUpper());
+    }
+    return tokens;
+}
+
+bool toolModeForCommand(const QString &id, CadView::ToolMode *mode)
+{
+    static const QHash<QString, CadView::ToolMode> table = {
+        {QStringLiteral("ALIGNED"), CadView::ToolMode::Aligned},
+        {QStringLiteral("LINEAR"), CadView::ToolMode::Linear},
+        {QStringLiteral("CONTINUOUS"), CadView::ToolMode::Continuous},
+        {QStringLiteral("BATCH"), CadView::ToolMode::Batch},
+        {QStringLiteral("RECT"), CadView::ToolMode::Rectangle},
+        {QStringLiteral("POLYGON"), CadView::ToolMode::Polygon},
+        {QStringLiteral("CIRCLEAREA"), CadView::ToolMode::CircleArea},
+        {QStringLiteral("FILLED"), CadView::ToolMode::FilledArea},
+        {QStringLiteral("SIDEAREA"), CadView::ToolMode::SideArea},
+        {QStringLiteral("AREAOFFSET"), CadView::ToolMode::AreaOffset},
+        {QStringLiteral("RADIUS"), CadView::ToolMode::Radius},
+        {QStringLiteral("DIAMETER"), CadView::ToolMode::Diameter},
+        {QStringLiteral("ANGLE"), CadView::ToolMode::Angle},
+        {QStringLiteral("ARCLENGTH"), CadView::ToolMode::ArcLength},
+        {QStringLiteral("COORD"), CadView::ToolMode::Coordinate},
+        {QStringLiteral("POINTLINE"), CadView::ToolMode::PointToLine},
+        {QStringLiteral("FIXEDDIST"), CadView::ToolMode::FixedDistance},
+        {QStringLiteral("TEXT"), CadView::ToolMode::Text},
+        {QStringLiteral("CALIBRATE"), CadView::ToolMode::Calibrate},
+        {QStringLiteral("ERASE"), CadView::ToolMode::Erase},
+        {QStringLiteral("SELECT"), CadView::ToolMode::Select}
+    };
+    const auto it = table.constFind(id);
+    if (it == table.constEnd()) {
+        return false;
+    }
+    *mode = it.value();
+    return true;
+}
+
+} // namespace
+
+void MainWindow::echoCommand(const QString &text)
+{
+    if (m_commandLine) {
+        m_commandLine->appendMessage(text, CommandLine::MessageKind::Info);
+    }
+}
+
+void MainWindow::echoCommandOk(const QString &text)
+{
+    if (m_commandLine) {
+        m_commandLine->appendMessage(text, CommandLine::MessageKind::Success);
+    }
+}
+
+void MainWindow::echoCommandError(const QString &text)
+{
+    if (m_commandLine) {
+        m_commandLine->appendMessage(text, CommandLine::MessageKind::Error);
+    }
+}
+
+void MainWindow::setCommandPanelVisible(bool visible)
+{
+    if (m_commandLine) {
+        m_commandLine->setVisible(visible);
+    }
+    if (m_commandPanelButton) {
+        const QSignalBlocker blocker(m_commandPanelButton);
+        m_commandPanelButton->setChecked(visible);
+    }
+    if (m_commandPanelAction
+        && m_commandPanelAction->isChecked() != visible) {
+        const QSignalBlocker blocker(m_commandPanelAction);
+        m_commandPanelAction->setChecked(visible);
+    }
+}
+
+QStringList MainWindow::commandCompletions() const
+{
+    QStringList tokens;
+    for (const CommandSpec &spec : commandSpecTable()) {
+        for (const QString &token : commandTokens(spec)) {
+            bool ascii = true;
+            for (const QChar character : token) {
+                if (character.unicode() > 127) {
+                    ascii = false;
+                    break;
+                }
+            }
+            if (ascii) {
+                tokens.append(token);
+            }
+        }
+    }
+    tokens.removeDuplicates();
+    tokens.sort();
+    return tokens;
+}
+
+void MainWindow::updateCommandSuggestions(const QString &text)
+{
+    if (!m_commandLine) {
+        return;
+    }
+    const QString raw = text.trimmed();
+    if (raw.isEmpty()) {
+        m_commandLine->setSuggestions({});
+        m_commandLine->setHint(QStringLiteral(
+            "输入命令 · Tab 补全 · ↑↓ 历史 · ? 命令列表"));
+        return;
+    }
+    const QString query = raw.toUpper();
+    bool asciiQuery = true;
+    for (const QChar character : query) {
+        if (character.unicode() > 127) {
+            asciiQuery = false;
+            break;
+        }
+    }
+
+    QVector<CommandSuggestion> matches;
+    for (const CommandSpec &spec : commandSpecTable()) {
+        const QStringList tokens = commandTokens(spec);
+        const QString title = QString::fromUtf8(spec.title);
+        const QString usage = QString::fromUtf8(spec.usage);
+
+        // 完全命中：不再弹候选，直接把用法提示在右侧
+        for (const QString &token : tokens) {
+            if (token == query) {
+                m_commandLine->setSuggestions({});
+                m_commandLine->setHint(
+                    QStringLiteral("▸ %1 — %2").arg(title, usage));
+                return;
+            }
+        }
+
+        QString pick;
+        for (const QString &token : std::as_const(tokens)) {
+            const bool hit = token.startsWith(query)
+                || (!asciiQuery && token.contains(query));
+            if (hit && (pick.isEmpty() || token.size() < pick.size())) {
+                pick = token;
+            }
+        }
+        if (pick.isEmpty()) {
+            continue;
+        }
+        matches.append({pick, title, usage});
+        if (matches.size() >= 8) {
+            break;
+        }
+    }
+
+    if (matches.isEmpty()) {
+        m_commandLine->setSuggestions({});
+        m_commandLine->setHint(
+            QStringLiteral("无匹配命令 · 输入 ? 查看全部"));
+        return;
+    }
+    m_commandLine->setHint(
+        QStringLiteral("%1 个匹配 · ↑↓ 选择 · Tab 补全")
+            .arg(matches.size()));
+    m_commandLine->setSuggestions(matches);
+}
+
+void MainWindow::showCommandReference()
+{
+    if (!m_commandLine) {
+        return;
+    }
+    setCommandPanelVisible(true);
+    m_commandLine->appendMessage(
+        QStringLiteral("可用命令（不区分大小写，回车重复上一条）"),
+        CommandLine::MessageKind::Info);
+    for (const CommandSpec &spec : commandSpecTable()) {
+        const QString tokens =
+            commandTokens(spec).join(QStringLiteral(" / "));
+        m_commandLine->appendMessage(
+            QStringLiteral("%1   %2 — %3")
+                .arg(tokens.leftJustified(30, QLatin1Char(' ')),
+                     QString::fromUtf8(spec.title),
+                     QString::fromUtf8(spec.usage)),
+            CommandLine::MessageKind::Hint);
+    }
+    m_commandLine->setHint(
+        QStringLiteral("Tab 补全 · ↑↓ 历史 · Esc 退出命令窗口"));
+}
+
+void MainWindow::startToolMode(CadView::ToolMode mode,
+                               const QString &label)
+{
+    if (!m_view) {
+        return;
+    }
+    m_view->beginTool(mode);
+    m_view->setFocus();
+    if (!label.isEmpty()) {
+        echoCommandOk(label);
+    }
+}
+
+void MainWindow::executeCommand(const QString &raw)
+{
+    if (!m_commandLine) {
+        return;
+    }
+    QString text = raw.trimmed();
+    if (text.isEmpty()) {
+        if (m_lastCommand.isEmpty()) {
+            echoCommand(QStringLiteral(
+                "输入命令后回车；输入 ? 查看全部命令。"));
+            return;
+        }
+        text = m_lastCommand;
+    }
+    m_lastCommand = text;
+    m_commandLine->appendCommandEcho(text);
+
+    QString normalized = text;
+    while (normalized.startsWith(QLatin1Char(':'))
+           || normalized.startsWith(QLatin1Char('_'))) {
+        normalized.remove(0, 1);
+    }
+    const QStringList parts = normalized.split(
+        QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+    if (parts.isEmpty()) {
+        return;
+    }
+    const QString key = parts.first().toUpper();
+    const QStringList args = parts.mid(1);
+
+    const CommandSpec *matched = nullptr;
+    for (const CommandSpec &spec : commandSpecTable()) {
+        if (commandTokens(spec).contains(key)) {
+            matched = &spec;
+            break;
+        }
+    }
+    if (!matched) {
+        QStringList suggestions;
+        for (const CommandSpec &spec : commandSpecTable()) {
+            for (const QString &token : commandTokens(spec)) {
+                if (!token.isEmpty() && token.startsWith(key)
+                    && suggestions.size() < 6) {
+                    suggestions.append(token);
+                }
+            }
+        }
+        QString message =
+            QStringLiteral("未知命令“%1”。输入 ? 查看命令列表。").arg(key);
+        if (!suggestions.isEmpty()) {
+            message += QStringLiteral(" 可能是：")
+                + suggestions.join(QStringLiteral(" / "));
+        }
+        echoCommandError(message);
+        return;
+    }
+
+    const QString id = QString::fromLatin1(matched->id);
+    const QString title = QString::fromUtf8(matched->title);
+    const QString usage = QString::fromUtf8(matched->usage);
+    const bool hasDocument = m_view && m_view->document();
+
+    CadView::ToolMode toolMode = CadView::ToolMode::Select;
+    if (toolModeForCommand(id, &toolMode)) {
+        if (!hasDocument) {
+            echoCommandError(QStringLiteral(
+                "没有打开的图纸。输入 OPEN 或 Ctrl+O 打开 DWG / DXF / PDF。"));
+            return;
+        }
+        startToolMode(toolMode, QStringLiteral("✓ %1：%2").arg(title, usage));
+        return;
+    }
+
+    if (id == QLatin1String("ZOOM")) {
+        if (!hasDocument) {
+            echoCommandError(QStringLiteral("没有打开的图纸。"));
+            return;
+        }
+        const QString sub = args.value(0).toUpper();
+        if (sub.isEmpty()) {
+            echoCommand(QStringLiteral(
+                "缩放：Z E 显示全图 · Z W 窗口 · Z I 放大 · Z O 缩小 "
+                "· Z <倍数>"));
+        } else if (sub == QLatin1String("E")
+                   || sub == QLatin1String("EXTENTS")
+                   || sub == QLatin1String("A")
+                   || sub == QLatin1String("ALL")) {
+            m_view->fitToDrawing();
+            echoCommandOk(QStringLiteral("✓ 显示全图（范围缩放）"));
+        } else if (sub == QLatin1String("W")
+                   || sub == QLatin1String("WINDOW")) {
+            startToolMode(CadView::ToolMode::ZoomWindow,
+                          QStringLiteral("✓ 窗口缩放：框选要放大的区域"));
+        } else if (sub == QLatin1String("I")
+                   || sub == QLatin1String("IN")) {
+            m_view->zoomAt(1.5, m_view->rect().center());
+            echoCommandOk(QStringLiteral("✓ 放大 1.5×"));
+        } else if (sub == QLatin1String("O")
+                   || sub == QLatin1String("OUT")) {
+            m_view->zoomAt(1.0 / 1.5, m_view->rect().center());
+            echoCommandOk(QStringLiteral("✓ 缩小 1.5×"));
+        } else {
+            bool ok = false;
+            const double factor = sub.toDouble(&ok);
+            if (ok && factor > 0.01 && factor < 100.0) {
+                m_view->zoomAt(factor, m_view->rect().center());
+                echoCommandOk(QStringLiteral("✓ 缩放 %1×").arg(factor));
+            } else {
+                echoCommandError(QStringLiteral(
+                    "无法识别的缩放参数“%1”。").arg(sub));
+            }
+        }
+        return;
+    }
+
+    if (id == QLatin1String("FIT")) {
+        if (hasDocument) {
+            m_view->fitToDrawing();
+            echoCommandOk(QStringLiteral("✓ 显示全图"));
+        } else {
+            echoCommandError(QStringLiteral("没有打开的图纸。"));
+        }
+        return;
+    }
+    if (id == QLatin1String("PAN")) {
+        if (hasDocument) {
+            m_view->beginTool(CadView::ToolMode::Select);
+            m_view->setFocus();
+        }
+        echoCommand(QStringLiteral(
+            "平移：按住空格键拖动，或用触控板双指拖动；滚轮缩放。"));
+        return;
+    }
+    if (id == QLatin1String("REGEN")) {
+        if (hasDocument) {
+            m_view->invalidateDrawingCache();
+            m_view->update();
+            echoCommandOk(QStringLiteral("✓ 已重画"));
+        } else {
+            echoCommandError(QStringLiteral("没有打开的图纸。"));
+        }
+        return;
+    }
+    if (id == QLatin1String("GRID")) {
+        m_gridAction->trigger();
+        echoCommandOk(m_gridAction->isChecked()
+                          ? QStringLiteral("✓ 栅格：开")
+                          : QStringLiteral("✓ 栅格：关"));
+        return;
+    }
+    if (id == QLatin1String("SNAP")) {
+        m_snapEnabledAction->trigger();
+        echoCommandOk(m_snapEnabledAction->isChecked()
+                          ? QStringLiteral("✓ 对象捕捉：开")
+                          : QStringLiteral("✓ 对象捕捉：关"));
+        return;
+    }
+    if (id == QLatin1String("ORTHO")) {
+        m_orthoAction->trigger();
+        echoCommandOk(m_orthoAction->isChecked()
+                          ? QStringLiteral("✓ 正交：开")
+                          : QStringLiteral("✓ 正交：关"));
+        return;
+    }
+    if (id == QLatin1String("LAYER")) {
+        m_layerPanelAction->setChecked(true);
+        echoCommandOk(QStringLiteral("✓ 已打开图层面板"));
+        return;
+    }
+    if (id == QLatin1String("UNITS")) {
+        if (hasDocument) {
+            echoCommand(QStringLiteral("当前单位：%1 · 精度 %2 位")
+                            .arg(measuringUnitLabel(m_view->displayUnit()),
+                                 QString::number(
+                                     m_precisionCombo
+                                         ? m_precisionCombo->currentIndex()
+                                         : 0)));
+        }
+        echoCommand(QStringLiteral(
+            "单位与精度也可在右侧「测量与标注」面板中修改。"));
+        return;
+    }
+    if (id == QLatin1String("SETTINGS")) {
+        showAnnotationSettings();
+        echoCommandOk(QStringLiteral("✓ 已打开标注设置"));
+        return;
+    }
+    if (id == QLatin1String("PLOT")) {
+        requestPrint();
+        return;
+    }
+    if (id == QLatin1String("PLOTFRAMES")) {
+        printLayoutFrames();
+        return;
+    }
+    if (id == QLatin1String("PREVIEW")) {
+        showPrintPreview();
+        return;
+    }
+    if (id == QLatin1String("SAVE")) {
+        m_saveAction->trigger();
+        return;
+    }
+    if (id == QLatin1String("SAVEAS")) {
+        m_saveAsAction->trigger();
+        return;
+    }
+    if (id == QLatin1String("OPEN")) {
+        m_openAction->trigger();
+        return;
+    }
+    if (id == QLatin1String("CLOSE")) {
+        if (m_activeDocumentIndex >= 0) {
+            closeDocumentTab(m_activeDocumentIndex);
+            echoCommandOk(QStringLiteral("✓ 已关闭当前图纸"));
+        } else {
+            echoCommandError(QStringLiteral("当前没有打开的图纸。"));
+        }
+        return;
+    }
+    if (id == QLatin1String("UNDO") || id == QLatin1String("REDO")) {
+        if (!hasDocument) {
+            echoCommandError(QStringLiteral("没有打开的图纸。"));
+            return;
+        }
+        const bool undone = id == QLatin1String("UNDO")
+            ? m_view->undo() : m_view->redo();
+        echoCommandOk(undone ? QStringLiteral("✓ 完成")
+                             : QStringLiteral("没有可用的操作"));
+        return;
+    }
+    if (id == QLatin1String("MODEL")) {
+        if (!hasDocument) {
+            echoCommandError(QStringLiteral("没有打开的图纸。"));
+            return;
+        }
+        for (int index = 0; index < m_layoutTabs->count(); ++index) {
+            if (m_layoutTabs->tabText(index) == QStringLiteral("模型")) {
+                m_layoutTabs->setCurrentIndex(index);
+                echoCommandOk(QStringLiteral("✓ 已切换到模型空间"));
+                return;
+            }
+        }
+        echoCommandError(QStringLiteral("此图纸没有模型空间。"));
+        return;
+    }
+    if (id == QLatin1String("LAYOUT")) {
+        if (!hasDocument || m_layoutTabs->count() <= 1) {
+            echoCommandError(QStringLiteral("当前图纸没有可切换的布局。"));
+            return;
+        }
+        const int next =
+            (m_layoutTabs->currentIndex() + 1) % m_layoutTabs->count();
+        m_layoutTabs->setCurrentIndex(next);
+        echoCommandOk(QStringLiteral("✓ 已切换到 %1")
+                          .arg(m_layoutTabs->tabText(next)));
+        return;
+    }
+    if (id == QLatin1String("ANNOTOGGLE")) {
+        m_annotationVisibilityAction->trigger();
+        echoCommandOk(m_annotationVisibilityAction->isChecked()
+                          ? QStringLiteral("✓ 标注：显示")
+                          : QStringLiteral("✓ 标注：隐藏"));
+        return;
+    }
+    if (id == QLatin1String("THEME")) {
+        const CadTheme next =
+            m_cadTheme == CadTheme::Dark ? CadTheme::Light
+            : m_cadTheme == CadTheme::Light ? CadTheme::Gray
+            : m_cadTheme == CadTheme::Gray ? CadTheme::Blueprint
+                                          : CadTheme::Dark;
+        setCadTheme(next, true);
+        echoCommandOk(QStringLiteral("✓ 已切换主题"));
+        return;
+    }
+    if (id == QLatin1String("VERSION")) {
+        echoCommand(QStringLiteral("速看CAD %1 · Qt %2")
+                        .arg(QCoreApplication::applicationVersion(),
+                             QString::fromLatin1(qVersion())));
+        if (hasDocument) {
+            const CadDocument &document = *m_view->document();
+            echoCommand(QStringLiteral("图纸：%1 · 空间：%2 · 图元：%3")
+                            .arg(document.fileName, m_view->activeSpace())
+                            .arg(document.entities.size()));
+        }
+        return;
+    }
+    if (id == QLatin1String("HELP")) {
+        showCommandReference();
+        return;
+    }
+    if (id == QLatin1String("QUIT")) {
+        echoCommand(QStringLiteral("正在退出…"));
+        close();
+        return;
+    }
+    echoCommand(QStringLiteral("%1：%2").arg(title, usage));
+}
+
+void MainWindow::dragEnterEvent(QDragEnterEvent *event)
+{
+    if (!event->mimeData() || !event->mimeData()->hasUrls()) {
+        event->ignore();
+        return;
+    }
+    for (const QUrl &url : event->mimeData()->urls()) {
+        const QString suffix =
+            QFileInfo(url.toLocalFile()).suffix().toLower();
+        if (suffix == QStringLiteral("dwg")
+            || suffix == QStringLiteral("dxf")
+            || suffix == QStringLiteral("pdf")) {
+            event->acceptProposedAction();
+            return;
+        }
+    }
+    event->ignore();
+}
+
+void MainWindow::dropEvent(QDropEvent *event)
+{
+    if (!event->mimeData() || !event->mimeData()->hasUrls()) {
+        event->ignore();
+        return;
+    }
+    QStringList drawings;
+    for (const QUrl &url : event->mimeData()->urls()) {
+        const QString path = url.toLocalFile();
+        const QString suffix = QFileInfo(path).suffix().toLower();
+        if (QFileInfo(path).isFile()
+            && (suffix == QStringLiteral("dwg")
+                || suffix == QStringLiteral("dxf")
+                || suffix == QStringLiteral("pdf"))) {
+            drawings.append(path);
+        }
+    }
+    if (drawings.isEmpty()) {
+        event->ignore();
+        return;
+    }
+    event->acceptProposedAction();
+    if (drawings.size() > 1) {
+        echoCommand(QStringLiteral(
+            "一次只能加载一张图纸，已打开 %1（其余 %2 个文件已忽略）")
+                        .arg(QFileInfo(drawings.first()).fileName())
+                        .arg(drawings.size() - 1));
+    }
+    openDrawing(drawings.first());
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)

@@ -6,14 +6,12 @@
 #include <QVector>
 #include <QWidget>
 
-class QGridLayout;
-class QHideEvent;
 class QLabel;
-class QResizeEvent;
-class QScrollArea;
+class QPushButton;
 class QShowEvent;
-class QToolButton;
-class StartScreenLineBackground;
+class QStackedWidget;
+class QTreeWidget;
+class QTreeWidgetItem;
 
 struct RecentDrawing {
     QString path;
@@ -22,6 +20,7 @@ struct RecentDrawing {
     QDateTime lastOpened;
 };
 
+// CAD 起始页：左侧「开始」操作栏 + 中间最近图纸列表 + 右侧预览面板。
 class StartScreen : public QWidget {
     Q_OBJECT
 
@@ -37,26 +36,33 @@ signals:
     void browseRequested();
     void openRequested(const QString &path);
     void removeRecentRequested(const QString &path);
+    void clearRecentRequested();
     void motionEnabledChanged(bool enabled);
+    void commandReferenceRequested();
 
 protected:
     void showEvent(QShowEvent *event) override;
-    void hideEvent(QHideEvent *event) override;
-    void resizeEvent(QResizeEvent *event) override;
 
 private:
-    void rebuildRecentCards();
-    int columnCountForWidth(int width) const;
+    void rebuildRecentList();
+    void updatePreview(const QString &path);
+    void applyTheme();
+    void openSelected();
+    void removeSelected();
 
     QVector<RecentDrawing> m_recentDrawings;
-    QScrollArea *m_scrollArea = nullptr;
-    StartScreenLineBackground *m_background = nullptr;
-    QWidget *m_recentHost = nullptr;
-    QGridLayout *m_recentGrid = nullptr;
+    QStackedWidget *m_listStack = nullptr;
+    QTreeWidget *m_list = nullptr;
     QLabel *m_emptyLabel = nullptr;
-    QToolButton *m_motionToggle = nullptr;
-    QString m_darkStyleSheet;
-    int m_columnCount = 0;
+    QLabel *m_countLabel = nullptr;
+    QPushButton *m_clearRecent = nullptr;
+    QLabel *m_previewImage = nullptr;
+    QLabel *m_previewTitle = nullptr;
+    QLabel *m_previewPath = nullptr;
+    QLabel *m_previewMeta = nullptr;
+    QPushButton *m_previewOpen = nullptr;
+    QPushButton *m_previewRemove = nullptr;
+    QLabel *m_previewPlaceholder = nullptr;
     bool m_darkTheme = true;
     bool m_motionEnabled = false;
 };

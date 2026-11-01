@@ -52,6 +52,7 @@
     <file>icons/layers.svg</file>
     <file>icons/annotations.svg</file>
     <file>icons/print.svg</file>
+    <file>icons/print-frames.svg</file>
     <file>icons/pdf.svg</file>
     <file>icons/file-dwg.svg</file>
     <file>icons/file-dxf.svg</file>

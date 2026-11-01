@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.28)
 
-project(CadLens VERSION 1.0.4 LANGUAGES C CXX)
+project(CadLens VERSION 1.0.5 LANGUAGES C CXX)
 
 if(APPLE)
     enable_language(OBJCXX)
@@ -131,6 +131,8 @@ add_executable(CadLens MACOSX_BUNDLE
     src/FileAssociation.h
     src/StartScreen.cpp
     src/StartScreen.h
+    src/CommandLine.cpp
+    src/CommandLine.h
     src/CadView.cpp
     src/CadView.h
     resources/resources.qrc

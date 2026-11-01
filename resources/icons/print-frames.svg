@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <!-- 图框页：外框 + 内部图框线 + 标题栏（与普通打印图标区分） -->
+  <path d="M6.5 2.6h11v9.2h-11Z" fill="none" stroke="#aebdcc" stroke-width="1.4" stroke-linejoin="round"/>
+  <path d="M8.3 4.4h7.4v5.6H8.3Z" fill="none" stroke="#5da7d3" stroke-width="1" stroke-linejoin="round"/>
+  <path d="M8.3 8.2h7.4M13.1 8.2v1.8" stroke="#5da7d3" stroke-width="0.9"/>
+  <!-- 打印机主体 -->
+  <path d="M4 11.4h16v6.4H4Z" fill="none" stroke="#aebdcc" stroke-width="1.5" stroke-linejoin="round"/>
+  <path d="M8 17.8h8" stroke="#aebdcc" stroke-width="1.4" stroke-linecap="round"/>
+  <path d="M16.2 13.5h1.4" stroke="#5da7d3" stroke-width="1.5" stroke-linecap="round"/>
+</svg>

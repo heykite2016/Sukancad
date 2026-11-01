@@ -188,6 +188,8 @@ signals:
     void activeSpaceChanged(const QString &spaceName);
     void printAreaSelected(const QRectF &worldArea);
     void printAreaSelectionCanceled();
+    // 画布获得焦点时直接敲字母/数字，转投到命令行（CAD 习惯）
+    void commandTextEntered(const QString &text);
 
 protected:
     void initializeGL() override;
@@ -241,6 +243,11 @@ private:
                          const QPointF &anchor, const QColor &color,
                          QRectF *hitRect = nullptr,
                          bool emphasized = false);
+    // 带底板的标注框：侧面积等结果直接写在图纸上，密集线条处也清晰。
+    void drawNotePlate(QPainter &painter, const QString &text,
+                       const QPointF &anchor, const QColor &color,
+                       QRectF *hitRect = nullptr,
+                       bool emphasized = false);
     void drawDimensionText(QPainter &painter, const QString &text,
                            const QPointF &anchor, const QColor &color,
                            double angleDegrees = 0.0,
@@ -255,6 +262,21 @@ private:
         const QPointF &worldStart, const QPointF &worldEnd,
         const QPointF &leaderHint, const QColor &color,
         QRectF *hitRect = nullptr, bool bothTerminals = true);
+    // 建筑制图尺寸链：统一偏置的尺寸线 + 尺寸界线 + 起止符号，
+    // 数字写在尺寸线上方中部（GB/T 50001 建筑标注习惯）。
+    void drawDimensionChain(QPainter &painter,
+                            const Measurement &measurement,
+                            const QVector<QPointF> &screenPoints,
+                            const QColor &color, bool selected);
+    // 侧面积：尺寸线直接落在被选中的线段/圆弧上，段长写在线身上，
+    // 面积结果用引线引出（与“CAD快速看图”的侧面积标注方式一致）。
+    void drawSideAreaAnnotation(QPainter &painter,
+                                const Measurement &measurement,
+                                const QVector<QPointF> &screenPoints,
+                                const QColor &color, bool selected);
+    QPainterPath measurementOutline(
+        const Measurement &measurement,
+        const QVector<QPointF> &screenPoints) const;
     void drawSnapMarker(QPainter &painter, const QPointF &screenPoint,
                         SnapKind kind);
     void drawDeleteHoverMarker(QPainter &painter);
@@ -294,6 +316,9 @@ private:
     double m_fitScale = 1.0;
     QPointF m_cursorWorld;
     QPointF m_cursorScreen;
+    // Screen position where the crosshair is actually drawn: follows the
+    // snap point (AutoCAD "magnet") instead of the raw pointer.
+    QPointF m_displayScreen;
     SnapResult m_snap;
     bool m_haveCursor = false;
     bool m_initialFitPending = true;

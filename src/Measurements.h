@@ -59,7 +59,9 @@ struct AnnotationStyleMetrics {
 };
 
 struct DisplaySettings {
-    AnnotationStyle annotationStyle = AnnotationStyle::Standard;
+    // 默认建筑斜线起止符号（GB/T 50001 建筑制图标准：尺寸起止符号
+    // 采用中粗斜短线），可在标注设置中切换为 ISO 箭头等其他样式。
+    AnnotationStyle annotationStyle = AnnotationStyle::Architectural;
     MeasuringUnit lengthUnit = MeasuringUnit::Millimeter;
     MeasuringUnit areaUnit = MeasuringUnit::Meter;
     MeasuringUnit coordinateUnit = MeasuringUnit::Millimeter;

@@ -4073,6 +4073,22 @@ dwg_decode_eed (Bit_Chain *restrict dat, Dwg_Object_Object *restrict obj)
           end = dat->byte + size;
         }
 
+      if (_obj->fixedtype == DWG_TYPE_PROXY_OBJECT
+          || _obj->fixedtype == DWG_TYPE_PROXY_ENTITY)
+        {
+          /* Proxy application data (huge raw blobs emitted by vertical
+             CAD applications) is not used by this viewer. Keep the stream
+             position identical to the full decode, but skip the expensive
+             per-byte TF read and chunk parsing. Some drawings carry
+             ~300k proxy objects, each with large EED chunks. */
+          obj->eed[idx].raw = NULL;
+          obj->eed[idx].data = NULL;
+          dat->byte = end;
+          dat->bit = 0;
+          idx++;
+          continue;
+        }
+
       sav_byte = dat->byte;
       obj->eed[idx].raw = bit_read_TF (dat, size);
       LOG_TRACE ("EED[%u] raw: %d\n", idx, size);

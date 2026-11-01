@@ -15,16 +15,20 @@ class QCloseEvent;
 class QComboBox;
 class QDialog;
 class QDockWidget;
+class QDragEnterEvent;
+class QDropEvent;
 class QLabel;
 class QProgressBar;
 class QStackedWidget;
 class QToolBar;
+class QToolButton;
 class QTableWidget;
 class QTableWidgetItem;
 class QTabBar;
 class QTimer;
 class QTreeWidget;
 class QTreeWidgetItem;
+class CommandLine;
 class StartScreen;
 
 struct DrawingLoadResult {
@@ -53,6 +57,8 @@ public:
 
 protected:
     void closeEvent(QCloseEvent *event) override;
+    void dragEnterEvent(QDragEnterEvent *event) override;
+    void dropEvent(QDropEvent *event) override;
 
 private:
     enum class CadTheme {
@@ -66,6 +72,7 @@ private:
     void createInterface();
     void createMenus();
     void applyStyle();
+    void appendChromeStyles(QString &styleSheet);
     void refreshActionIcons();
     QIcon themedIcon(const QString &name) const;
     void setCadTheme(CadTheme theme, bool persist = true);
@@ -96,6 +103,7 @@ private:
     void refreshStartScreen();
     void saveRecentThumbnail(const QString &path, const QImage &image);
     void removeRecentDrawing(const QString &path);
+    void clearRecentDrawings();
     void pruneSystemCachesToRecent(const QVariantList &recentRecords);
     void exportSvgAs();
     void requestTextAnnotation(const QPointF &position);
@@ -111,6 +119,19 @@ private:
     void handlePrintArea(const QRectF &worldArea);
     void handlePrintAreaCanceled();
     void showPrintPreview();
+    void printLayoutFrames();
+    QVector<QRectF> detectLayoutFrames(const QString &spaceName) const;
+    // AutoCAD 命令模式
+    void executeCommand(const QString &raw);
+    void echoCommand(const QString &text);
+    void echoCommandError(const QString &text);
+    void echoCommandOk(const QString &text);
+    void setCommandPanelVisible(bool visible);
+    void showCommandReference();
+    void startToolMode(CadView::ToolMode mode, const QString &label);
+    QStringList commandCompletions() const;
+    // 命令行动态提示：输入过程中实时给出候选命令与用法
+    void updateCommandSuggestions(const QString &text);
     void changeUnit(int index);
     void changePrecision(int index);
     void setDirty(bool dirty);
@@ -147,6 +168,11 @@ private:
     QLabel *m_zoomLabel = nullptr;
     QLabel *m_summaryLabel = nullptr;
     QProgressBar *m_progress = nullptr;
+    CommandLine *m_commandLine = nullptr;
+    QToolButton *m_commandPanelButton = nullptr;
+    QAction *m_commandPanelAction = nullptr;
+    QString m_lastCommand;
+    QString m_lastCommandHint;
     QActionGroup *m_toolGroup = nullptr;
     QAction *m_selectAction = nullptr;
     QAction *m_openAction = nullptr;
@@ -154,6 +180,7 @@ private:
     QAction *m_saveAsAction = nullptr;
     QAction *m_exportSvgAction = nullptr;
     QAction *m_printAction = nullptr;
+    QAction *m_printFramesAction = nullptr;
     QAction *m_undoAction = nullptr;
     QAction *m_redoAction = nullptr;
     QAction *m_deleteAction = nullptr;
