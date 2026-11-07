@@ -1,0 +1,12 @@
+.DS_Store
+.qt/
+build/
+build-*/
+dist/
+Testing/
+CadLensIOS/
+copyright-application/
+*.log
+*.user
+.workbuddy/
+.codex/

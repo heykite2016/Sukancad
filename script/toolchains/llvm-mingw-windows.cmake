@@ -1,0 +1,42 @@
+set(CMAKE_SYSTEM_NAME Windows)
+set(CMAKE_SYSTEM_VERSION 10.0)
+set(CMAKE_SYSTEM_PROCESSOR x86_64)
+set(CMAKE_CROSSCOMPILING TRUE)
+
+if(NOT DEFINED ENV{CADLENS_LLVM_MINGW_ROOT})
+    message(FATAL_ERROR "CADLENS_LLVM_MINGW_ROOT is required")
+endif()
+
+set(_MINGW_ROOT "$ENV{CADLENS_LLVM_MINGW_ROOT}")
+set(CMAKE_C_COMPILER
+    "${_MINGW_ROOT}/bin/x86_64-w64-mingw32-clang")
+set(CMAKE_CXX_COMPILER
+    "${_MINGW_ROOT}/bin/x86_64-w64-mingw32-clang++")
+set(CMAKE_RC_COMPILER
+    "${_MINGW_ROOT}/bin/x86_64-w64-mingw32-windres")
+set(CMAKE_AR
+    "${_MINGW_ROOT}/bin/x86_64-w64-mingw32-ar")
+set(CMAKE_RANLIB
+    "${_MINGW_ROOT}/bin/x86_64-w64-mingw32-ranlib")
+set(CMAKE_STRIP
+    "${_MINGW_ROOT}/bin/x86_64-w64-mingw32-strip")
+
+execute_process(
+    COMMAND "${CMAKE_CXX_COMPILER}" --version
+    OUTPUT_VARIABLE _CADLENS_CXX_VERSION
+    ERROR_QUIET
+)
+if(NOT _CADLENS_CXX_VERSION MATCHES "clang version 17\\.")
+    message(FATAL_ERROR
+        "Qt 6.8.3 llvm-mingw builds require Clang 17. "
+        "Found: ${_CADLENS_CXX_VERSION}"
+    )
+endif()
+
+set(CMAKE_FIND_ROOT_PATH
+    "$ENV{CADLENS_WIN_QT_ROOT}"
+    "${_MINGW_ROOT}/x86_64-w64-mingw32")
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)

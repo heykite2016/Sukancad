@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>zh_CN</string>
+    <key>CFBundleExecutable</key>
+    <string>${MACOSX_BUNDLE_EXECUTABLE_NAME}</string>
+    <key>CFBundleGetInfoString</key>
+    <string>${MACOSX_BUNDLE_INFO_STRING}</string>
+    <key>CFBundleIconFile</key>
+    <string>CadLens.icns</string>
+    <key>CFBundleIdentifier</key>
+    <string>${MACOSX_BUNDLE_GUI_IDENTIFIER}</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleLongVersionString</key>
+    <string>${MACOSX_BUNDLE_LONG_VERSION_STRING}</string>
+    <key>CFBundleName</key>
+    <string>${MACOSX_BUNDLE_BUNDLE_NAME}</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>${MACOSX_BUNDLE_SHORT_VERSION_STRING}</string>
+    <key>CFBundleSignature</key>
+    <string>????</string>
+    <key>CFBundleVersion</key>
+    <string>${MACOSX_BUNDLE_BUNDLE_VERSION}</string>
+    <key>CSResourcesFileMapped</key>
+    <true/>
+    <key>NSHumanReadableCopyright</key>
+    <string>${MACOSX_BUNDLE_COPYRIGHT}</string>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>速看CAD DWG 图纸</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>CFBundleTypeExtensions</key>
+            <array><string>dwg</string></array>
+            <key>LSItemContentTypes</key>
+            <array><string>com.sukancad.dwg</string></array>
+            <key>CFBundleTypeIconFile</key>
+            <string>CadLensDWG.icns</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>速看CAD DXF 图纸</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>CFBundleTypeExtensions</key>
+            <array><string>dxf</string></array>
+            <key>LSItemContentTypes</key>
+            <array><string>com.sukancad.dxf</string></array>
+            <key>CFBundleTypeIconFile</key>
+            <string>CadLensDXF.icns</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>PDF 文档</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>CFBundleTypeExtensions</key>
+            <array><string>pdf</string></array>
+            <key>LSItemContentTypes</key>
+            <array><string>com.adobe.pdf</string></array>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+        </dict>
+    </array>
+    <key>UTImportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>com.sukancad.dwg</string>
+            <key>UTTypeDescription</key>
+            <string>AutoCAD Drawing</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.data</string>
+                <string>public.content</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array><string>dwg</string></array>
+                <key>public.mime-type</key>
+                <array><string>application/acad</string></array>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>com.sukancad.dxf</string>
+            <key>UTTypeDescription</key>
+            <string>Drawing Exchange Format</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.data</string>
+                <string>public.content</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array><string>dxf</string></array>
+                <key>public.mime-type</key>
+                <array><string>image/vnd.dxf</string></array>
+            </dict>
+        </dict>
+    </array>
+</dict>
+</plist>

@@ -1,0 +1,33 @@
+name: Feature request
+description: 建议新功能或工作流改进
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 要解决的问题
+      description: 请描述实际工程场景，而不只是 UI 控件名称。
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议方案
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 已考虑的其他方案
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 主要平台
+      options:
+        - 所有平台
+        - macOS
+        - Windows
+    validations:
+      required: true
