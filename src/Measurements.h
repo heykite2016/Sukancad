@@ -85,6 +85,9 @@ struct DisplaySettings {
     // Multiplier applied to the drawing's native dimension-text height.
     // 1.0 keeps annotation text visually identical to source dimensions.
     double dimensionTextScale = 1.0;
+    // Screen-space line width shared by dimension lines, extension lines,
+    // leaders and annotation markers.
+    double annotationLineWidth = 1.1;
     bool annotationScaleWithDrawing = true;
     QColor annotationColor = QColor(QStringLiteral("#37d67a"));
     QColor crosshairColor = QColor(QStringLiteral("#ffffff"));
@@ -134,7 +137,8 @@ QString annotationStyleKey(AnnotationStyle style);
 AnnotationStyle annotationStyleFromKey(const QString &key,
                                        AnnotationStyle fallback =
                                            AnnotationStyle::Standard);
-AnnotationStyleMetrics annotationStyleMetrics(AnnotationStyle style);
+AnnotationStyleMetrics annotationStyleMetrics(
+    AnnotationStyle style, double lineWidthOverride = 0.0);
 QString annotationSidecarPath(const QString &drawingPath);
 QString annotationAutosavePath(const QString &drawingPath);
 

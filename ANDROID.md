@@ -1,6 +1,6 @@
 # Android 移植说明
 
-当前 Android 版本为 `2.0.2`，是原生 Kotlin/Canvas 应用，不复用桌面端 Qt UI。
+当前 Android 版本为 `2.0.3`，是原生 Kotlin/Canvas 应用，不复用桌面端 Qt UI。
 
 ## 当前已移植
 
@@ -60,8 +60,8 @@ compileSdk/targetSdk 34
 产物：
 
 ```text
-dist/CadLens-2.0.2-android-arm64-debug.apk
-dist/CadLens-2.0.2-android-arm64.apk
+dist/CadLens-2.0.3-android-arm64-debug.apk
+dist/CadLens-2.0.3-android-arm64.apk
 ```
 
 直接使用 Gradle：
@@ -76,7 +76,7 @@ cd android
 
 ```bash
 adb devices -l
-adb install -r dist/CadLens-2.0.2-android-arm64.apk
+adb install -r dist/CadLens-2.0.3-android-arm64.apk
 ```
 
 部分 OPPO/OnePlus 设备首次安装会显示系统安装确认页，需要点击“继续安装”。

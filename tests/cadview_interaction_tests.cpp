@@ -126,12 +126,37 @@ int main(int argc, char *argv[])
     }
     const RenderingSettings renderingDefaults =
         view.renderingSettings();
-    if (renderingDefaults.quality != RenderingQuality::Balanced
+    if (renderingDefaults.quality != RenderingQuality::Performance
         || !renderingDefaults.antialiasing
         || !renderingDefaults.smoothZoom
         || !renderingDefaults.hardwareAcceleration
         || renderingDefaults.lineWeights) {
         return fail("CAD rendering defaults are not active");
+    }
+    if (view.format().samples() < 4) {
+        return fail("CAD canvas multisampling is not enabled");
+    }
+    RenderingSettings qualitySettings = view.renderingSettings();
+    qualitySettings.quality = RenderingQuality::High;
+    view.setRenderingSettings(qualitySettings);
+    if (view.renderingSettings().quality
+        != RenderingQuality::High) {
+        return fail("canvas quality level could not be changed");
+    }
+    if (view.isLineWeightsVisible()) {
+        return fail("CAD line weights are visible by default");
+    }
+    view.setLineWeightsVisible(true);
+    if (!view.isLineWeightsVisible()) {
+        return fail("CAD line weights could not be enabled");
+    }
+    view.setRenderingSettings(qualitySettings);
+    if (!view.isLineWeightsVisible()) {
+        return fail("quality changes reset line-weight visibility");
+    }
+    view.setLineWeightsVisible(false);
+    if (view.isLineWeightsVisible()) {
+        return fail("CAD line weights could not be disabled");
     }
 
     auto clusteredDocument = std::make_shared<CadDocument>();
@@ -309,6 +334,82 @@ int main(int argc, char *argv[])
         || view.measurements().last().type != MeasurementType::Polygon) {
         return fail("polygon closure or commit failed");
     }
+    const Measurement &polygonMeasurement =
+        view.measurements().last();
+    if (polygonMeasurement.segments.size() != 3
+        || polygonMeasurement.edgeLengths.size() != 3) {
+        return fail("polygon dimensions did not follow every path edge");
+    }
+
+    auto arcPolygonDocument = std::make_shared<CadDocument>();
+    arcPolygonDocument->path = QStringLiteral("arc-polygon.dxf");
+    arcPolygonDocument->fileName = QStringLiteral("arc-polygon.dxf");
+    arcPolygonDocument->bounds = QRectF(0.0, 0.0, 200.0, 120.0);
+    arcPolygonDocument->layers.append(layer);
+    CadEntity polygonArc;
+    polygonArc.type = CadEntityType::Arc;
+    polygonArc.layer = layer.name;
+    polygonArc.center = QPointF(100.0, 50.0);
+    polygonArc.radius = 50.0;
+    const double halfPi = std::acos(-1.0) * 0.5;
+    polygonArc.startAngle = -halfPi;
+    polygonArc.endAngle = halfPi;
+    for (int index = 0; index <= 32; ++index) {
+        const double angle =
+            polygonArc.startAngle
+            + (polygonArc.endAngle - polygonArc.startAngle)
+                * double(index) / 32.0;
+        polygonArc.points.append(
+            polygonArc.center
+            + QPointF(std::cos(angle), std::sin(angle))
+                * polygonArc.radius);
+    }
+    polygonArc.updateBounds();
+    arcPolygonDocument->entities.append(polygonArc);
+
+    CadView arcPolygonView;
+    arcPolygonView.resize(900, 700);
+    arcPolygonView.setGridVisible(false);
+    arcPolygonView.setDocument(arcPolygonDocument);
+    arcPolygonView.fitToDrawing();
+    const QSizeF arcPolygonViewport(arcPolygonView.size());
+    const auto arcScreen = [&](const QPointF &world) {
+        return QPointF(
+            arcPolygonViewport.width() * 0.5
+                + (world.x() - arcPolygonView.viewCenter().x())
+                    * arcPolygonView.zoomScale(),
+            arcPolygonViewport.height() * 0.5
+                - (world.y() - arcPolygonView.viewCenter().y())
+                    * arcPolygonView.zoomScale());
+    };
+    const QPointF arcStart(100.0, 0.0);
+    const QPointF arcQuarter(
+        100.0 + 50.0 * std::cos(-halfPi * 0.5),
+        50.0 + 50.0 * std::sin(-halfPi * 0.5));
+    const QPointF arcEnd(100.0, 100.0);
+    const QPointF polygonTail(20.0, 100.0);
+    arcPolygonView.beginTool(CadView::ToolMode::Polygon);
+    mouseClick(arcPolygonView, arcScreen(arcStart));
+    mouseClick(arcPolygonView, arcScreen(arcQuarter));
+    mouseClick(arcPolygonView, arcScreen(arcEnd));
+    mouseClick(arcPolygonView, arcScreen(polygonTail));
+    mouseClick(arcPolygonView, arcScreen(arcStart));
+    mouseClick(arcPolygonView, arcScreen(QPointF(70.0, 40.0)));
+    if (arcPolygonView.measurements().isEmpty()) {
+        return fail("arc polygon measurement was not committed");
+    }
+    const Measurement &arcPolygon =
+        arcPolygonView.measurements().last();
+    int arcEdges = 0;
+    for (const MeasurementSegment &segment : arcPolygon.segments) {
+        if (segment.kind == MeasurementSegmentKind::Arc) {
+            ++arcEdges;
+        }
+    }
+    if (arcEdges != 2) {
+        return fail(
+            "polygon did not recognize consecutive points on the same arc");
+    }
 
     view.beginTool(CadView::ToolMode::Angle);
     mouseClick(view, QPointF(350.0, 350.0));
@@ -348,6 +449,7 @@ int main(int argc, char *argv[])
         || display.crosshairLength != 100
         || !qFuzzyCompare(display.crosshairLineWidth, 1.25)
         || !qFuzzyCompare(display.dimensionTextScale, 1.0)
+        || !qFuzzyCompare(display.annotationLineWidth, 1.1)
         || !display.annotationScaleWithDrawing) {
         return fail("default crosshair settings are incorrect");
     }
@@ -365,6 +467,10 @@ int main(int argc, char *argv[])
     if (annotationStyleMetrics(AnnotationStyle::Standard).marker
         != AnnotationMarker::FilledArrow) {
         return fail("China interior dimensions do not use filled arrowheads");
+    }
+    if (!near(annotationStyleMetrics(
+                  AnnotationStyle::Standard, 2.2).lineWidth, 2.2)) {
+        return fail("annotation line width override was ignored");
     }
     QSet<int> styleMarkers;
     const QVector<AnnotationStyle> styles = {
@@ -1079,12 +1185,13 @@ int main(int argc, char *argv[])
     };
     continuousArcView.beginTool(CadView::ToolMode::Continuous);
     const double middleAngle = continuousArc.endAngle * 0.5;
+    // 点击圆弧端点即可选中整段圆弧。
     mouseClick(
         continuousArcView,
         arcScreenAt(
             continuousArc.center
-            + QPointF(std::cos(middleAngle), std::sin(middleAngle))
-                * continuousArc.radius));
+            + QPointF(1.0, 0.0) * continuousArc.radius));
+    // 再次点击弧上内部点仍能识别该圆弧，但同一段不能重复累计。
     mouseClick(
         continuousArcView,
         arcScreenAt(
@@ -1715,6 +1822,7 @@ int main(int argc, char *argv[])
     persistedDisplay.crosshairCenterBoxVisible = false;
     persistedDisplay.crosshairCenterBoxSize = 16.0;
     persistedDisplay.dimensionTextScale = 1.35;
+    persistedDisplay.annotationLineWidth = 2.3;
     persistedDisplay.annotationScaleWithDrawing = false;
     view.setDisplaySettings(persistedDisplay);
     if (!saveAnnotations(annotationDrawing, *document,
@@ -1737,6 +1845,7 @@ int main(int argc, char *argv[])
         || loadedSettings.crosshairCenterBoxVisible
         || !near(loadedSettings.crosshairCenterBoxSize, 16.0)
         || !near(loadedSettings.dimensionTextScale, 1.35)
+        || !near(loadedSettings.annotationLineWidth, 2.3)
         || loadedSettings.annotationScaleWithDrawing) {
         return fail("annotation restore failed");
     }

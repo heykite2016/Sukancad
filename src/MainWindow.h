@@ -79,6 +79,8 @@ private:
     void refreshActionIcons();
     QIcon themedIcon(const QString &name) const;
     void setCadTheme(CadTheme theme, bool persist = true);
+    void applyCanvasQuality(
+        RenderingQuality quality, bool persist = true);
     void setDrawingActionsEnabled(bool enabled);
     void dockMeasureToolbar(Qt::ToolBarArea area);
     void placeMeasurePalette(Qt::DockWidgetArea area);
@@ -209,6 +211,7 @@ private:
     QAction *m_snapEnabledAction = nullptr;
     QAction *m_gridAction = nullptr;
     QAction *m_orthoAction = nullptr;
+    QAction *m_lineWeightAction = nullptr;
     QAction *m_darkThemeAction = nullptr;
     QAction *m_lightThemeAction = nullptr;
     QAction *m_grayThemeAction = nullptr;
@@ -232,6 +235,8 @@ private:
     bool m_workspaceLayoutReady = false;
     CadTheme m_cadTheme = CadTheme::Dark;
     QRectF m_lastPrintArea;
+    RenderingQuality m_canvasQuality =
+        RenderingQuality::Performance;
     struct PrintSession {
         QVector<CadPrintPage> pages;
         int currentPage = 0;

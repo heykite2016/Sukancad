@@ -34,7 +34,7 @@ enum class RenderingQuality {
 };
 
 struct RenderingSettings {
-    RenderingQuality quality = RenderingQuality::Balanced;
+    RenderingQuality quality = RenderingQuality::Performance;
     bool antialiasing = true;
     bool smoothZoom = true;
     bool hardwareAcceleration = true;
@@ -129,6 +129,7 @@ public:
     MeasuringUnit displayUnit() const { return m_settings.lengthUnit; }
     void setPrecision(int precision);
     void setLineWeightsVisible(bool visible);
+    bool isLineWeightsVisible() const { return m_lineWeightsVisible; }
     void setSnapModes(const SnapModes &modes);
     SnapModes snapModes() const { return m_snapModes; }
     void setSnapEnabled(bool enabled);

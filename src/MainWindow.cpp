@@ -262,6 +262,9 @@ void saveApplicationDisplaySettings(const DisplaySettings &settings)
         QStringLiteral("display/dimensionTextScale"),
         qBound(0.5, settings.dimensionTextScale, 2.5));
     values.setValue(
+        QStringLiteral("display/annotationLineWidth"),
+        qBound(0.5, settings.annotationLineWidth, 4.0));
+    values.setValue(
         QStringLiteral("display/annotationScaleWithDrawing"),
         settings.annotationScaleWithDrawing);
     values.setValue(
@@ -312,6 +315,12 @@ void loadApplicationDisplaySettings(DisplaySettings &settings)
             QStringLiteral("display/dimensionTextScale"),
             settings.dimensionTextScale).toDouble(),
         2.5);
+    settings.annotationLineWidth = qBound(
+        0.5,
+        values.value(
+            QStringLiteral("display/annotationLineWidth"),
+            settings.annotationLineWidth).toDouble(),
+        4.0);
     settings.annotationScaleWithDrawing = values.value(
         QStringLiteral("display/annotationScaleWithDrawing"),
         settings.annotationScaleWithDrawing).toBool();
@@ -978,6 +987,19 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
             ? Qt::ColorScheme::Light : Qt::ColorScheme::Dark);
 
     m_view = new CadView;
+    const QString savedCanvasQuality = settings.value(
+        QStringLiteral("display/canvasQuality"),
+        QStringLiteral("performance")).toString();
+    m_canvasQuality =
+        savedCanvasQuality == QStringLiteral("high")
+            ? RenderingQuality::High
+        : savedCanvasQuality == QStringLiteral("balanced")
+            ? RenderingQuality::Balanced
+            : RenderingQuality::Performance;
+    RenderingSettings initialRendering =
+        m_view->renderingSettings();
+    initialRendering.quality = m_canvasQuality;
+    m_view->setRenderingSettings(initialRendering);
     m_loadWatcher = new QFutureWatcher<DrawingLoadResult>(this);
     m_annotationAutoSaveTimer = new QTimer(this);
     m_annotationAutoSaveTimer->setSingleShot(true);
@@ -1577,6 +1599,35 @@ void MainWindow::createActions()
             [this](bool enabled) {
                 if (m_view) m_view->setOrthoEnabled(enabled);
             });
+    m_lineWeightAction =
+        makeAction(QStringLiteral("显示线宽"), QStringLiteral("lineweight"));
+    m_lineWeightAction->setCheckable(true);
+    m_lineWeightAction->setToolTip(
+        QStringLiteral("显示或隐藏 CAD 图元线宽"));
+    m_lineWeightAction->setChecked(
+        applicationSettings()
+            .value(QStringLiteral("display/lineWeightsVisible"), false)
+            .toBool());
+    connect(m_lineWeightAction, &QAction::toggled, this,
+            [this](bool visible) {
+                if (m_view) {
+                    m_view->setLineWeightsVisible(visible);
+                }
+                for (DocumentSession &session :
+                     m_documentSessions) {
+                    if (session.view && session.view != m_view) {
+                        session.view->setLineWeightsVisible(visible);
+                    }
+                }
+                QSettings values = applicationSettings();
+                values.setValue(
+                    QStringLiteral("display/lineWeightsVisible"),
+                    visible);
+            });
+    if (m_view) {
+        m_view->setLineWeightsVisible(
+            m_lineWeightAction->isChecked());
+    }
 
     const auto toolHelp = [](CadView::ToolMode mode) {
         switch (mode) {
@@ -2475,6 +2526,8 @@ void MainWindow::createInterface()
                      QStringLiteral("栅格显示开关 (F7)"));
     makeStatusToggle(QStringLiteral("正交"), m_orthoAction,
                      QStringLiteral("正交约束开关 (F8)"));
+    makeStatusToggle(QStringLiteral("线宽"), m_lineWeightAction,
+                     QStringLiteral("显示或隐藏 CAD 图元线宽"));
     m_commandPanelButton = new QToolButton;
     m_commandPanelButton->setObjectName(QStringLiteral("statusToggle"));
     m_commandPanelButton->setText(QStringLiteral("命令行"));
@@ -2715,6 +2768,7 @@ void MainWindow::createMenus()
     viewMenu->addSeparator();
     viewMenu->addAction(m_snapEnabledAction);
     viewMenu->addAction(m_orthoAction);
+    viewMenu->addAction(m_lineWeightAction);
     viewMenu->addAction(m_gridAction);
     auto *snapMenu = viewMenu->addMenu(QStringLiteral("对象捕捉设置"));
     const QList<QPair<QString, SnapKind>> snapItems = {
@@ -3937,6 +3991,39 @@ void MainWindow::setCadTheme(CadTheme theme, bool persist)
     }
 }
 
+void MainWindow::applyCanvasQuality(
+    RenderingQuality quality, bool persist)
+{
+    m_canvasQuality = quality;
+    const auto applyToView = [quality](CadView *view) {
+        if (!view) {
+            return;
+        }
+        RenderingSettings settings = view->renderingSettings();
+        settings.quality = quality;
+        view->setRenderingSettings(settings);
+    };
+    applyToView(m_view);
+    for (const DocumentSession &session :
+         std::as_const(m_documentSessions)) {
+        if (session.view != m_view) {
+            applyToView(session.view);
+        }
+    }
+    if (persist) {
+        const QString qualityId =
+            quality == RenderingQuality::High
+                ? QStringLiteral("high")
+            : quality == RenderingQuality::Balanced
+                ? QStringLiteral("balanced")
+                : QStringLiteral("performance");
+        QSettings values = applicationSettings();
+        values.setValue(
+            QStringLiteral("display/canvasQuality"), qualityId);
+        values.sync();
+    }
+}
+
 void MainWindow::openDrawing(const QString &path)
 {
     openDrawingWithExternalReferences(
@@ -4144,6 +4231,9 @@ void MainWindow::finishDrawingLoad()
         m_view = newView;
         m_view->setSnapEnabled(m_snapEnabledAction->isChecked());
         m_view->setOrthoEnabled(m_orthoAction->isChecked());
+        m_view->setLineWeightsVisible(
+            m_lineWeightAction->isChecked());
+        applyCanvasQuality(m_canvasQuality, false);
     }
     m_view->setGridVisible(m_gridAction->isChecked());
     m_view->setDocument(result.document, result.modelIndex,
@@ -5037,7 +5127,8 @@ void MainWindow::showAnnotationSettings()
     auto *title = new QLabel(QStringLiteral("标注与测量设置"));
     title->setObjectName(QStringLiteral("settingsTitle"));
     auto *subtitle = new QLabel(
-        QStringLiteral("按 AutoCAD 分组方式配置标注、单位和十字光标"));
+        QStringLiteral(
+            "配置标注、画布质量、单位和十字光标"));
     subtitle->setObjectName(QStringLiteral("settingsSubtitle"));
     auto *titleColumn = new QVBoxLayout;
     titleColumn->setSpacing(2);
@@ -5079,11 +5170,23 @@ void MainWindow::showAnnotationSettings()
         qRound(qBound(0.5, draft.dimensionTextScale, 2.5) * 100.0));
     annotationForm->addWidget(textSizeLabel);
     annotationForm->addWidget(textSizeSpin);
+    auto *lineWidthLabel = new QLabel(QStringLiteral("标注线宽"));
+    auto *lineWidthSpin = new QDoubleSpinBox;
+    lineWidthSpin->setRange(0.5, 4.0);
+    lineWidthSpin->setSingleStep(0.1);
+    lineWidthSpin->setDecimals(1);
+    lineWidthSpin->setSuffix(QStringLiteral(" px"));
+    lineWidthSpin->setValue(
+        qBound(0.5, draft.annotationLineWidth, 4.0));
+    annotationForm->addWidget(lineWidthLabel);
+    annotationForm->addWidget(lineWidthSpin);
     auto *scaleWithDrawing =
-        new QCheckBox(QStringLiteral("标注随图纸缩放"));
+        new QCheckBox(QStringLiteral("标注随画布缩放"));
     scaleWithDrawing->setChecked(draft.annotationScaleWithDrawing);
     scaleWithDrawing->setToolTip(
-        QStringLiteral("关闭后尺寸和面积标注在屏幕上保持固定大小"));
+        QStringLiteral(
+            "尺寸文字、标注线宽、箭头和引线统一随画布缩放；"
+            "关闭后在屏幕上保持固定大小"));
     annotationForm->addWidget(scaleWithDrawing);
     auto *colorLabel = new QLabel(QStringLiteral("标注颜色"));
     auto *colorButton = new QPushButton;
@@ -5093,7 +5196,8 @@ void MainWindow::showAnnotationSettings()
     auto *styleHint = new QLabel(
         QStringLiteral(
             "默认取图纸现有尺寸字高；字体大小同时影响尺寸和面积测量结果，"
-            "不影响自由文字注释。"));
+            "不影响自由文字注释。标注线宽应用于尺寸线、尺寸界线、引线"
+            "和起止符号。"));
     styleHint->setWordWrap(true);
     styleHint->setObjectName(QStringLiteral("settingsHint"));
     annotationForm->addWidget(styleHint);
@@ -5306,6 +5410,8 @@ void MainWindow::showAnnotationSettings()
         draft.annotationStyle = style;
         draft.dimensionTextScale =
             qBound(0.5, textSizeSpin->value() / 100.0, 2.5);
+        draft.annotationLineWidth =
+            qBound(0.5, lineWidthSpin->value(), 4.0);
         draft.annotationScaleWithDrawing =
             scaleWithDrawing->isChecked();
         draft.annotationColor = selectedAnnotationColor;
@@ -5325,6 +5431,8 @@ void MainWindow::showAnnotationSettings()
             previewView, [&](int) { refreshAnnotationPreview(); });
     connect(textSizeSpin, &QSpinBox::valueChanged,
             previewView, [&](int) { refreshAnnotationPreview(); });
+    connect(lineWidthSpin, &QDoubleSpinBox::valueChanged,
+            previewView, [&](double) { refreshAnnotationPreview(); });
     connect(scaleWithDrawing, &QCheckBox::toggled,
             previewView, [&](bool) { refreshAnnotationPreview(); });
     connect(colorButton, &QPushButton::clicked, &dialog, [&] {
@@ -5387,6 +5495,39 @@ void MainWindow::showAnnotationSettings()
     unitsLayout->addWidget(unitsGroup);
     unitsLayout->addStretch(1);
     tabs->addTab(unitsTab, QStringLiteral("单位与精度"));
+
+    auto *qualityTab = new QWidget;
+    auto *qualityLayout = new QVBoxLayout(qualityTab);
+    qualityLayout->setContentsMargins(14, 14, 14, 14);
+    auto *qualityGroup = new QGroupBox(QStringLiteral("画布质量"));
+    auto *qualityForm = new QVBoxLayout(qualityGroup);
+    auto *qualityCombo = new QComboBox;
+    qualityCombo->addItem(
+        QStringLiteral("一般"),
+        int(RenderingQuality::Performance));
+    qualityCombo->addItem(
+        QStringLiteral("精细"),
+        int(RenderingQuality::Balanced));
+    qualityCombo->addItem(
+        QStringLiteral("极致"),
+        int(RenderingQuality::High));
+    qualityCombo->setCurrentIndex(qMax(
+        0, qualityCombo->findData(int(m_canvasQuality))));
+    qualityForm->addWidget(new QLabel(QStringLiteral("画布质量等级")));
+    qualityForm->addWidget(qualityCombo);
+    auto *qualityHint = new QLabel(
+        QStringLiteral(
+            "一般：优先流畅，适合超大图纸。\n"
+            "精细：保留更多细小图元和文字，适合日常施工图。\n"
+            "极致：最高屏幕缓存倍率和细节，适合精细审图。\n"
+            "打印预览始终使用独立的高精度离屏渲染，不受此等级影响。"));
+    qualityHint->setObjectName(QStringLiteral("settingsHint"));
+    qualityHint->setWordWrap(true);
+    qualityForm->addWidget(qualityHint);
+    qualityForm->addStretch(1);
+    qualityLayout->addWidget(qualityGroup);
+    qualityLayout->addStretch(1);
+    tabs->addTab(qualityTab, QStringLiteral("画布质量"));
 
     auto *crosshairTab = new QWidget;
     auto *crosshairLayout = new QHBoxLayout(crosshairTab);
@@ -5510,6 +5651,8 @@ void MainWindow::showAnnotationSettings()
         static_cast<AnnotationStyle>(styleCombo->currentIndex());
     draft.dimensionTextScale =
         qBound(0.5, textSizeSpin->value() / 100.0, 2.5);
+    draft.annotationLineWidth =
+        qBound(0.5, lineWidthSpin->value(), 4.0);
     draft.annotationScaleWithDrawing =
         scaleWithDrawing->isChecked();
     draft.annotationColor = selectedAnnotationColor;
@@ -5525,6 +5668,8 @@ void MainWindow::showAnnotationSettings()
     draft.crosshairCenterBoxVisible = centerBox->isChecked();
     draft.crosshairCenterBoxSize = centerBoxSize->value();
     m_view->setDisplaySettings(draft);
+    applyCanvasQuality(static_cast<RenderingQuality>(
+        qualityCombo->currentData().toInt()));
     saveApplicationDisplaySettings(draft);
     refreshUnitControls();
     refreshMeasurementTable();
@@ -6494,9 +6639,10 @@ void MainWindow::showHelp()
         <p>支持端点、中点、交点、垂足、圆心、象限点和最近点。捕捉目标按视口范围查询，视口外图元不会参与绘制或捕捉。</p>
         <h3>单位、比例和标注样式</h3>
         <ul>
-          <li>提供中国室内常用、大号建筑斜线、机械 ISO-25、工程开口箭头、小数圆点和紧凑端线六种样式；尺寸字体优先沿用原图字高，原图没有尺寸时默认 25 px，并可设为该基准的 50%–250%。“标注随图纸缩放”关闭后，尺寸与面积标注保持固定屏幕大小；屏幕显示保证至少 25 px，不影响自由文字注释。</li>
+          <li>提供中国室内常用、大号建筑斜线、机械 ISO-25、工程开口箭头、小数圆点和紧凑端线六种样式；尺寸字体优先沿用原图字高，原图没有尺寸时默认 25 px，并可设为该基准的 50%–250%。“标注随画布缩放”关闭后，尺寸与面积标注保持固定屏幕大小；屏幕显示保证至少 25 px，不影响自由文字注释。</li>
           <li>长度和面积分别设置单位与精度；尺寸文字参考图纸原有标注字高并随视图缩放。</li>
-          <li>“标注显示与测量设置”使用“标注样式 / 单位与精度 / 十字光标”标签组；标注样式和颜色右侧提供实际图纸标注预览。十字光标按画布宽度比例设置，并可配置中心方框。</li>
+          <li>“标注显示与测量设置”包含标注样式、单位与精度、画布质量和十字光标；画布质量提供“一般 / 精细 / 极致”三档。</li>
+          <li>多边形测量沿实际路径逐段标注，相邻点位于同一圆弧时自动识别弧段；连续测量可点击圆弧端点或弧上点识别整段圆弧。</li>
           <li>比例校准、测量和文字标注自动保存，重新打开图纸时恢复。</li>
         </ul>
         <h2>打印与 PDF</h2>
@@ -6546,7 +6692,7 @@ void MainWindow::showHelp()
           <tr><td><kbd>F1</kbd></td><td>打开本帮助</td></tr>
         </table>
         <p class="tip">图纸仅在本地读取和处理，不会上传。按 F1 可随时重新打开帮助。</p>
-        <p class="note">提示：复杂图纸缩放时先显示低精度矢量，停止操作后自动恢复完整精度。打印预览中的缩放和滚动不会改变最终打印范围。</p>
+        <p class="note">提示：一般画质优先流畅，精细和极致会保留更多细小图元与文字。打印预览始终使用独立的高精度离屏渲染，不受画布质量等级影响。</p>
         </body></html>
     )");
     if (!helpLight) {
@@ -6617,6 +6763,11 @@ void MainWindow::showAbout()
         QLabel#aboutDescription {
             color:@muted; font-size:13px; line-height:1.55;
         }
+        QLabel#aboutContact {
+            color:@text; background:@panel;
+            border:1px solid @border; border-radius:6px;
+            padding:7px 9px; font-size:12px; font-weight:600;
+        }
         QFrame#aboutDonation {
             background:@panel; border:1px solid @border;
             border-radius:11px;
@@ -6672,6 +6823,8 @@ void MainWindow::showAbout()
         QStringLiteral("开发者：Mr. 王嘉"));
     auto *wechat = new QLabel(
         QStringLiteral("微信：SerendipityWangJia"));
+    author->setObjectName(QStringLiteral("aboutContact"));
+    wechat->setObjectName(QStringLiteral("aboutContact"));
     author->setTextInteractionFlags(Qt::TextSelectableByMouse);
     wechat->setTextInteractionFlags(Qt::TextSelectableByMouse);
     auto *logo = new QLabel;
@@ -7277,9 +7430,23 @@ void MainWindow::showPrintPreview()
     const auto updatePreview = [&] {
         const QSizeF millimeters = paperMillimeters();
         const int resolution = resolutionCombo->currentData().toInt();
-        const double longEdge =
-            resolution <= 600 ? 1400.0
-            : resolution <= 1200 ? 2000.0 : 2600.0;
+        double longEdge =
+            resolution <= 600 ? 1800.0
+            : resolution <= 1200 ? 2600.0 : 3400.0;
+        // The preview is intentionally crisp, but multi-page sessions must
+        // stay bounded. Allocate at most 48 megapixels across retained pages.
+        constexpr double maximumPreviewPixels =
+            48.0 * 1024.0 * 1024.0;
+        const double aspect =
+            millimeters.width() / millimeters.height();
+        const double pageCount = qMax(
+            1, m_printSession.pages.size());
+        const double budgetLongEdge = std::sqrt(
+            maximumPreviewPixels / pageCount
+            * qMax(aspect, 1.0 / qMax(aspect, 1.0e-9)));
+        longEdge = qMin(
+            longEdge,
+            qMax(640.0, budgetLongEdge));
         QSize pixelSize;
         if (millimeters.width() >= millimeters.height()) {
             pixelSize = QSize(
@@ -8819,6 +8986,23 @@ void MainWindow::closeEvent(QCloseEvent *event)
         settings.setValue(QStringLiteral("window/geometry"),
                           saveGeometry());
         settings.sync();
+    }
+    // Floating docks and toolbars are independent top-level windows on some
+    // window managers. Close them with the main application so the process
+    // exits cleanly and no orphan measurement panel remains on screen.
+    const auto floatingDocks = findChildren<QDockWidget *>();
+    for (QDockWidget *dock : floatingDocks) {
+        if (dock && dock->isFloating()) {
+            const QSignalBlocker blocker(dock);
+            dock->close();
+        }
+    }
+    const auto floatingToolBars = findChildren<QToolBar *>();
+    for (QToolBar *toolBar : floatingToolBars) {
+        if (toolBar && toolBar->isFloating()) {
+            const QSignalBlocker blocker(toolBar);
+            toolBar->close();
+        }
     }
     event->accept();
 }

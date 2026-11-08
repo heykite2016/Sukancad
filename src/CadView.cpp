@@ -613,6 +613,7 @@ CadView::CadView(QWidget *parent) : QOpenGLWidget(parent)
     QSurfaceFormat format = QSurfaceFormat::defaultFormat();
     format.setDepthBufferSize(24);
     format.setStencilBufferSize(8);
+    format.setSamples(4);
     format.setSwapInterval(1);
     setFormat(format);
     setFocusPolicy(Qt::StrongFocus);
@@ -1332,8 +1333,13 @@ void CadView::hideAllMeasurements()
 
 void CadView::setLineWeightsVisible(bool visible)
 {
+    if (m_lineWeightsVisible == visible) {
+        return;
+    }
     m_lineWeightsVisible = visible;
-    update();
+    // Line width is part of the geometry cache key. Repaint immediately
+    // after invalidating it instead of blitting the old-width bitmap.
+    invalidateDrawingCache();
 }
 
 void CadView::setSnapModes(const SnapModes &modes)
@@ -1361,28 +1367,26 @@ void CadView::setOrthoEnabled(bool enabled)
 void CadView::setRenderingSettings(const RenderingSettings &settings)
 {
     m_renderingSettings = settings;
-    m_lineWeightsVisible = settings.lineWeights;
     invalidateDrawingCache();
 }
 
 bool CadView::antialiasingEnabled() const
 {
-    return m_printStyle
-        || (!m_panning && !m_zoomPreviewActive
-            && m_renderingSettings.antialiasing
-            && m_renderingSettings.quality
-                != RenderingQuality::Performance);
+    // The drawing canvas must remain antialiased during pan and zoom too.
+    // CAD linework is mostly sub-pixel geometry, where switching this off
+    // causes visible stair-stepping and line-weight flicker.
+    return true;
 }
 
 qreal CadView::renderCachePixelRatio() const
 {
     switch (m_renderingSettings.quality) {
     case RenderingQuality::High:
-        return qBound<qreal>(1.0, devicePixelRatioF(), 2.0);
+        return qBound<qreal>(1.0, devicePixelRatioF(), 2.5);
     case RenderingQuality::Balanced:
-        return qBound<qreal>(1.0, devicePixelRatioF(), 1.5);
+        return qBound<qreal>(1.0, devicePixelRatioF(), 1.75);
     case RenderingQuality::Performance:
-        return qBound<qreal>(1.0, devicePixelRatioF(), 1.25);
+        return qBound<qreal>(1.0, devicePixelRatioF(), 1.4);
     }
     return 1.0;
 }
@@ -1577,7 +1581,9 @@ double CadView::annotationGeometryScale() const
     const double referenceHeight = dimensionReferenceTextHeightWorld();
     const double pixelsPerUnit = std::isfinite(m_scale) ? m_scale : 1.0;
     const double baseTextSize =
-        qMax(1.0, annotationStyleMetrics(m_settings.annotationStyle)
+        qMax(1.0, annotationStyleMetrics(
+                      m_settings.annotationStyle,
+                      m_settings.annotationLineWidth)
                       .textSize);
     double sourceTextPixels = pixelsPerUnit * referenceHeight;
     if (m_applyingDimensionTextScale && !m_printStyle) {
@@ -1896,7 +1902,7 @@ void CadView::renderScene(QPainter &painter, const QSize &viewport,
     painter.setRenderHint(QPainter::Antialiasing,
                           antialiasingEnabled());
     painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
-    painter.setRenderHint(QPainter::TextAntialiasing, false);
+    painter.setRenderHint(QPainter::TextAntialiasing, true);
     drawBackground(painter, viewport, exporting);
     drawPdfPage(painter);
     drawCadEntities(painter, viewport);
@@ -2186,26 +2192,26 @@ void CadView::drawCadEntities(QPainter &painter, const QSize &viewport)
     int textLimit = 2200;
     switch (m_renderingSettings.quality) {
     case RenderingQuality::High:
-        lodTolerance = 0.15;
-        entityMinimumPixels = 0.05;
-        minimumTextPixels = 0.9;
-        textLimit = 3200;
+        lodTolerance = 0.08;
+        entityMinimumPixels = 0.02;
+        minimumTextPixels = 0.45;
+        textLimit = 5000;
         break;
     case RenderingQuality::Balanced:
-        lodTolerance = 0.35;
-        entityMinimumPixels = 0.08;
-        minimumTextPixels = 1.5;
-        textLimit = 2200;
+        lodTolerance = 0.15;
+        entityMinimumPixels = 0.04;
+        minimumTextPixels = 0.70;
+        textLimit = 4000;
         break;
     case RenderingQuality::Performance:
-        lodTolerance = 0.95;
-        entityMinimumPixels = 0.35;
-        minimumTextPixels = 3.0;
-        textLimit = 1100;
+        lodTolerance = 0.35;
+        entityMinimumPixels = 0.08;
+        minimumTextPixels = 1.50;
+        textLimit = 2200;
         break;
     }
     if (interactivePreview) {
-        lodTolerance = qMax(lodTolerance + 0.80, 1.6);
+        lodTolerance = qMax(lodTolerance + 0.25, 0.65);
     }
     if (m_printStyle) {
         lodTolerance = 0.05;
@@ -2219,7 +2225,6 @@ void CadView::drawCadEntities(QPainter &painter, const QSize &viewport)
     if (!interactivePreview && !m_printStyle && !m_buildingVectorCache) {
         if (!m_vectorCacheValid || m_vectorCacheSize != viewport
             || !cacheViewMatches) {
-            const qreal dpr = renderCachePixelRatio();
             // Screen caches carry an overdraw margin so a pan/zoom gesture
             // can slide real pixels into view instead of forcing a full CPU
             // rebuild. Snapshots/print exports need no margin (and must stay
@@ -2231,6 +2236,18 @@ void CadView::drawCadEntities(QPainter &painter, const QSize &viewport)
                          192);
             const QSize padded(viewport.width() + 2 * pad,
                                viewport.height() + 2 * pad);
+            qreal dpr = renderCachePixelRatio();
+            // Bound each open drawing's retained cache. Extreme quality still
+            // supersamples ordinary windows, while a very large client area
+            // cannot retain a multi-hundred-megabyte QImage indefinitely.
+            constexpr double maximumCachePixels = 32.0 * 1024.0 * 1024.0;
+            const double paddedPixels =
+                double(padded.width()) * double(padded.height());
+            if (paddedPixels > 0.0) {
+                const qreal pixelBudgetRatio = qreal(std::sqrt(
+                    maximumCachePixels / paddedPixels));
+                dpr = qBound<qreal>(1.0, pixelBudgetRatio, dpr);
+            }
             QImage image(
                 QSize(qMax(1, int(std::ceil(padded.width() * dpr))),
                       qMax(1, int(std::ceil(padded.height() * dpr)))),
@@ -2283,15 +2300,15 @@ void CadView::drawCadEntities(QPainter &painter, const QSize &viewport)
         m_spatialIndex.query(world, m_document->entities.size());
     if (!m_printStyle) {
         if (visible.size() > 120000) {
-            lodTolerance = qMax(lodTolerance, 0.90);
-            entityMinimumPixels = qMax(entityMinimumPixels, 0.22);
-            minimumTextPixels = qMax(minimumTextPixels, 2.4);
-            textLimit = qMin(textLimit, 1400);
+            lodTolerance = qMax(lodTolerance, 0.40);
+            entityMinimumPixels = qMax(entityMinimumPixels, 0.08);
+            minimumTextPixels = qMax(minimumTextPixels, 1.0);
+            textLimit = qMin(textLimit, 3000);
         } else if (visible.size() > 60000) {
-            lodTolerance = qMax(lodTolerance, 0.65);
-            entityMinimumPixels = qMax(entityMinimumPixels, 0.14);
-            minimumTextPixels = qMax(minimumTextPixels, 1.8);
-            textLimit = qMin(textLimit, 1800);
+            lodTolerance = qMax(lodTolerance, 0.25);
+            entityMinimumPixels = qMax(entityMinimumPixels, 0.05);
+            minimumTextPixels = qMax(minimumTextPixels, 0.7);
+            textLimit = qMin(textLimit, 4200);
         }
     }
     const double minimumScreenEdge =
@@ -3184,7 +3201,9 @@ void CadView::drawArrow(QPainter &painter, const QPointF &tip,
         return;
     }
     const AnnotationStyleMetrics metrics =
-        annotationStyleMetrics(m_settings.annotationStyle);
+        annotationStyleMetrics(
+            m_settings.annotationStyle,
+            m_settings.annotationLineWidth);
     const double geometryScale = annotationGeometryScale();
     const double markerSize = qMax(
         0.65, metrics.arrowSize * geometryScale);
@@ -3206,8 +3225,7 @@ void CadView::drawArrow(QPainter &painter, const QPointF &tip,
         painter.save();
         painter.setPen(
             QPen(color,
-                 annotationStroke(qMax(1.15, metrics.lineWidth),
-                                  geometryScale),
+                 annotationStroke(metrics.lineWidth, geometryScale),
                  Qt::SolidLine, Qt::RoundCap));
         painter.setBrush(Qt::NoBrush);
         painter.drawLine(tip - tick, tip + tick);
@@ -3273,7 +3291,9 @@ void CadView::drawVectorLabel(QPainter &painter, const QString &text,
         return;
     }
     const AnnotationStyleMetrics metrics =
-        annotationStyleMetrics(m_settings.annotationStyle);
+        annotationStyleMetrics(
+            m_settings.annotationStyle,
+            m_settings.annotationLineWidth);
     const double geometryScale = annotationGeometryScale();
     const int fontPixels = qMax(
         1, qRound(metrics.textSize * geometryScale
@@ -3318,7 +3338,9 @@ void CadView::drawNotePlate(QPainter &painter, const QString &text,
         return;
     }
     const AnnotationStyleMetrics metrics =
-        annotationStyleMetrics(m_settings.annotationStyle);
+        annotationStyleMetrics(
+            m_settings.annotationStyle,
+            m_settings.annotationLineWidth);
     const double geometryScale = annotationGeometryScale();
     const int fontPixels = qMax(
         1, qRound(metrics.textSize * geometryScale
@@ -3350,7 +3372,9 @@ void CadView::drawNotePlate(QPainter &painter, const QString &text,
     painter.save();
     painter.translate(anchor);
     painter.setBrush(plateColor);
-    painter.setPen(QPen(ink, annotationStroke(1.0, geometryScale),
+    painter.setPen(QPen(ink,
+                        annotationStroke(metrics.lineWidth,
+                                         geometryScale),
                         Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
     const double radius = qMin(3.0, plate.height() * 0.25);
     painter.drawRoundedRect(plate, radius, radius);
@@ -3383,7 +3407,9 @@ void CadView::drawDimensionText(QPainter &painter, const QString &text,
         angleDegrees += 180.0;
     }
     const AnnotationStyleMetrics metrics =
-        annotationStyleMetrics(m_settings.annotationStyle);
+        annotationStyleMetrics(
+            m_settings.annotationStyle,
+            m_settings.annotationLineWidth);
     const double geometryScale = annotationGeometryScale();
     const int fontPixels = qMax(
         1, qRound(metrics.textSize * geometryScale
@@ -3437,7 +3463,9 @@ void CadView::drawInlineDimension(
     const double lineLength =
         std::hypot(lineVector.x(), lineVector.y());
     const AnnotationStyleMetrics metrics =
-        annotationStyleMetrics(m_settings.annotationStyle);
+        annotationStyleMetrics(
+            m_settings.annotationStyle,
+            m_settings.annotationLineWidth);
     const double geometryScale = annotationGeometryScale();
     const int fontPixels = qMax(
         1, qRound(metrics.textSize * geometryScale));
@@ -3506,7 +3534,9 @@ void CadView::drawInlineDimension(
         midpoint + normal * (textHeight + gap * 2.0 + 8.0);
     const QPointF textEdge =
         labelAnchor - normal * (textHeight * 0.58);
-    painter.setPen(QPen(color, annotationStroke(0.8, geometryScale),
+    painter.setPen(QPen(color,
+                        annotationStroke(metrics.lineWidth * 0.72,
+                                         geometryScale),
                         Qt::SolidLine, Qt::RoundCap));
     painter.drawLine(midpoint, textEdge);
     drawDimensionText(
@@ -3587,7 +3617,9 @@ void CadView::drawContinuousDimension(
         return;
     }
     const AnnotationStyleMetrics metrics =
-        annotationStyleMetrics(m_settings.annotationStyle);
+        annotationStyleMetrics(
+            m_settings.annotationStyle,
+            m_settings.annotationLineWidth);
     const double geometryScale = annotationGeometryScale();
     struct Segment {
         QPointF start;
@@ -3768,7 +3800,9 @@ void CadView::drawContinuousDimension(
     if (bestDistance < std::numeric_limits<double>::max()
         && bestDistance > 2.0) {
         painter.setPen(QPen(
-            color, annotationStroke(0.9, geometryScale),
+            color,
+            annotationStroke(metrics.lineWidth * 0.82,
+                             geometryScale),
             Qt::SolidLine, Qt::RoundCap));
         painter.setBrush(Qt::NoBrush);
         painter.drawLine(foot, label);
@@ -3816,7 +3850,9 @@ void CadView::drawDimensionChain(QPainter &painter,
         return;
     }
     const AnnotationStyleMetrics metrics =
-        annotationStyleMetrics(m_settings.annotationStyle);
+        annotationStyleMetrics(
+            m_settings.annotationStyle,
+            m_settings.annotationLineWidth);
     const double geometryScale = annotationGeometryScale();
     struct ChainSegment {
         QPointF start;
@@ -3923,7 +3959,7 @@ void CadView::drawDimensionChain(QPainter &painter,
         qMax(1, qRound(metrics.textSize * geometryScale)),
         QFont::Medium);
     const QFontMetricsF valueMetrics(valueFont);
-    // 尺寸线偏置按字高推导：标注随图纸缩放时，偏距也一起缩放。
+    // 尺寸线偏置按字高推导：标注随画布缩放时，偏距也一起缩放。
     const double minimumOffset = qMax(6.0, valueMetrics.height() * 1.9);
     offset = qBound(minimumOffset, offset, minimumOffset * 7.0);
     QPen dimensionPen(color,
@@ -3933,7 +3969,8 @@ void CadView::drawDimensionChain(QPainter &painter,
                       Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin);
     dimensionPen.setCosmetic(!m_printStyle);
     QPen extensionPen(color,
-                      annotationStroke(selected ? 0.95 : 0.72,
+                      annotationStroke(metrics.lineWidth
+                                           * (selected ? 0.86 : 0.64),
                                        geometryScale),
                       Qt::SolidLine, Qt::FlatCap);
     extensionPen.setCosmetic(!m_printStyle);
@@ -4019,7 +4056,9 @@ void CadView::drawDimensionChain(QPainter &painter,
             const QPointF textEdge =
                 outward - normal * (valueMetrics.height() * 0.58);
             painter.setPen(QPen(
-                color, annotationStroke(0.8, geometryScale),
+                color,
+                annotationStroke(metrics.lineWidth * 0.72,
+                                 geometryScale),
                 Qt::SolidLine, Qt::RoundCap));
             painter.drawLine((a + b) * 0.5, textEdge);
             drawDimensionText(painter, value, outward, color, 0.0,
@@ -4038,7 +4077,9 @@ void CadView::drawSideAreaAnnotation(
         return;
     }
     const AnnotationStyleMetrics metrics =
-        annotationStyleMetrics(m_settings.annotationStyle);
+        annotationStyleMetrics(
+            m_settings.annotationStyle,
+            m_settings.annotationLineWidth);
     const double geometryScale = annotationGeometryScale();
     struct Edge {
         QPointF start;
@@ -4195,67 +4236,74 @@ void CadView::drawSideAreaAnnotation(
         painter.drawEllipse(endpoint, dotRadius, dotRadius);
     }
 
-    const QPointF label = worldToScreen(measurement.labelPosition);
-    QPointF foot;
-    double bestDistance = std::numeric_limits<double>::max();
-    for (int i = 1; i < screenPoints.size(); ++i) {
-        const QPointF start = screenPoints[i - 1];
-        const QPointF end = screenPoints[i];
-        const QPointF delta = end - start;
-        const double lengthSquared = QPointF::dotProduct(delta, delta);
-        const double t = lengthSquared > 1.0e-12
-            ? qBound(0.0,
-                     QPointF::dotProduct(label - start, delta)
-                         / lengthSquared,
-                     1.0)
-            : 0.0;
-        const QPointF candidate = start + delta * t;
-        const double distance = QLineF(label, candidate).length();
-        if (distance < bestDistance) {
-            bestDistance = distance;
-            foot = candidate;
+    const bool showResult =
+        measurement.type != MeasurementType::Polygon
+        || measurement.segments.size() >= 2;
+    if (showResult) {
+        const QPointF label = worldToScreen(measurement.labelPosition);
+        QPointF foot;
+        double bestDistance = std::numeric_limits<double>::max();
+        for (int i = 1; i < screenPoints.size(); ++i) {
+            const QPointF start = screenPoints[i - 1];
+            const QPointF end = screenPoints[i];
+            const QPointF delta = end - start;
+            const double lengthSquared = QPointF::dotProduct(delta, delta);
+            const double t = lengthSquared > 1.0e-12
+                ? qBound(0.0,
+                         QPointF::dotProduct(label - start, delta)
+                             / lengthSquared,
+                         1.0)
+                : 0.0;
+            const QPointF candidate = start + delta * t;
+            const double distance = QLineF(label, candidate).length();
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                foot = candidate;
+            }
         }
-    }
-    if (bestDistance < std::numeric_limits<double>::max()
-        && bestDistance > 2.0) {
-        painter.setPen(QPen(
-            color, annotationStroke(0.9, geometryScale),
-            Qt::SolidLine, Qt::RoundCap));
-        painter.setBrush(Qt::NoBrush);
-        painter.drawLine(foot, label);
-        m_measurementHitSegments[measurement.id].append(
-            QLineF(foot, label));
+        if (bestDistance < std::numeric_limits<double>::max()
+            && bestDistance > 2.0) {
+            painter.setPen(QPen(
+                color,
+                annotationStroke(metrics.lineWidth * 0.82,
+                                 geometryScale),
+                Qt::SolidLine, Qt::RoundCap));
+            painter.setBrush(Qt::NoBrush);
+            painter.drawLine(foot, label);
+            m_measurementHitSegments[measurement.id].append(
+                QLineF(foot, label));
 
-        QLineF arrowLine(foot, label);
-        const double arrowSize = qMax(
-            6.0, metrics.arrowSize * geometryScale);
-        arrowLine.setLength(arrowSize);
-        const double angle =
-            std::atan2(arrowLine.dy(), arrowLine.dx());
-        constexpr double spread = 0.34;
-        QPainterPath arrow;
-        arrow.moveTo(foot);
-        arrow.lineTo(
-            foot + QPointF(std::cos(angle - spread),
-                           std::sin(angle - spread)) * arrowSize);
-        arrow.lineTo(
-            foot + QPointF(std::cos(angle + spread),
-                           std::sin(angle + spread)) * arrowSize);
-        arrow.closeSubpath();
-        painter.save();
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(color);
-        painter.drawPath(arrow);
-        painter.restore();
-    }
-    const QString resultText =
-        measurement.primaryValue(*m_document, m_settings);
-    QRectF hitRect;
-    drawDimensionText(
-        painter, resultText, label, color, 0.0,
-        &hitRect, selected);
-    if (hitRect.isValid()) {
-        m_labelHitRects.insert(measurement.id, hitRect);
+            QLineF arrowLine(foot, label);
+            const double arrowSize = qMax(
+                6.0, metrics.arrowSize * geometryScale);
+            arrowLine.setLength(arrowSize);
+            const double angle =
+                std::atan2(arrowLine.dy(), arrowLine.dx());
+            constexpr double spread = 0.34;
+            QPainterPath arrow;
+            arrow.moveTo(foot);
+            arrow.lineTo(
+                foot + QPointF(std::cos(angle - spread),
+                               std::sin(angle - spread)) * arrowSize);
+            arrow.lineTo(
+                foot + QPointF(std::cos(angle + spread),
+                               std::sin(angle + spread)) * arrowSize);
+            arrow.closeSubpath();
+            painter.save();
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(color);
+            painter.drawPath(arrow);
+            painter.restore();
+        }
+        const QString resultText =
+            measurement.primaryValue(*m_document, m_settings);
+        QRectF hitRect;
+        drawDimensionText(
+            painter, resultText, label, color, 0.0,
+            &hitRect, selected);
+        if (hitRect.isValid()) {
+            m_labelHitRects.insert(measurement.id, hitRect);
+        }
     }
     painter.restore();
 }
@@ -4325,7 +4373,9 @@ void CadView::drawMeasurement(QPainter &painter,
     const QString value =
         measurement.primaryValue(*m_document, m_settings);
     const AnnotationStyleMetrics styleMetrics =
-        annotationStyleMetrics(m_settings.annotationStyle);
+        annotationStyleMetrics(
+            m_settings.annotationStyle,
+            m_settings.annotationLineWidth);
     const double geometryScale = annotationGeometryScale();
     QPen pen(color,
              annotationStroke(selected ? styleMetrics.lineWidth + 0.65
@@ -4337,9 +4387,14 @@ void CadView::drawMeasurement(QPainter &painter,
     painter.setPen(pen);
     painter.setBrush(Qt::NoBrush);
 
-    if (measurement.type == MeasurementType::Rectangle
-        || measurement.type == MeasurementType::Polygon
-        || measurement.type == MeasurementType::FilledArea) {
+    if (measurement.type == MeasurementType::Polygon
+        && points.size() >= 2) {
+        // 多边形只沿实际测量路径绘制尺寸线，线段或圆弧逐段标数；
+        // 总面积/周长仍使用用户最终落点，不与逐段尺寸混在一起。
+        drawSideAreaAnnotation(
+            painter, measurement, points, color, selected);
+    } else if (measurement.type == MeasurementType::Rectangle
+               || measurement.type == MeasurementType::FilledArea) {
         // 建筑制图习惯：面积标注只画房间轮廓 + 居中的面积/周长文字，
         // 不在每条边上堆叠尺寸文字。
         if (points.size() >= 3) {
@@ -4353,7 +4408,9 @@ void CadView::drawMeasurement(QPainter &painter,
                 painter.setBrush(Qt::NoBrush);
                 painter.setPen(QPen(
                     color,
-                    annotationStroke(selected ? 1.85 : 1.35,
+                    annotationStroke(
+                        selected ? styleMetrics.lineWidth + 0.65
+                                 : styleMetrics.lineWidth,
                                      geometryScale),
                     Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
                 painter.drawPath(outline);
@@ -4436,7 +4493,9 @@ void CadView::drawMeasurement(QPainter &painter,
                             end + normal * offsetPixels;
                         painter.setPen(QPen(
                             color,
-                            annotationStroke(0.72, geometryScale),
+                            annotationStroke(
+                                styleMetrics.lineWidth * 0.64,
+                                geometryScale),
                             Qt::SolidLine, Qt::FlatCap));
                         painter.drawLine(
                             start,
@@ -4767,7 +4826,8 @@ void CadView::drawMeasurement(QPainter &painter,
     }
     const bool measurementLabelHandled =
         measurement.type == MeasurementType::Continuous
-        || measurement.type == MeasurementType::SideArea;
+        || measurement.type == MeasurementType::SideArea
+        || measurement.type == MeasurementType::Polygon;
     if (!boxedAnnotation && !primaryTextDrawnInline && !measurementLabelHandled
         && !points.isEmpty()) {
         const bool closedArea =
@@ -4817,7 +4877,9 @@ void CadView::drawMeasurement(QPainter &painter,
                 < std::numeric_limits<double>::max()
             && nearestDistance > leaderThreshold) {
             painter.setPen(QPen(
-                color, selected ? 1.35 : 1.0,
+                color,
+                styleMetrics.lineWidth
+                    * (selected ? 1.18 : 0.88),
                 Qt::SolidLine, Qt::RoundCap));
             painter.drawLine(textAnchor, leaderTarget);
             m_measurementHitSegments[measurement.id].append(
@@ -4935,44 +4997,19 @@ std::optional<Measurement> CadView::draftMeasurement(
     case ToolMode::Polygon:
         measurement.type = MeasurementType::Polygon;
         measurement.closed = true;
-        if (sourcePoints.size() >= 3) {
-            QVector<QPointF> traced;
-            traced.reserve(sourcePoints.size() * 8);
-            for (int i = 0; i < sourcePoints.size(); ++i) {
-                const QPointF start = sourcePoints[i];
-                const QPointF end =
-                    sourcePoints[(i + 1) % sourcePoints.size()];
-                if (traced.isEmpty()) {
-                    traced.append(start);
+        if (sourcePoints.size() >= 2) {
+            QVector<QPointF> boundary = sourcePoints;
+            if (boundary.size() >= 3) {
+                if (QLineF(boundary.last(), boundary.first()).length()
+                    < snapRadiusWorld() * 0.12) {
+                    boundary.removeLast();
                 }
-                QVector<QPointF> arcPath;
-                double arcLength = 0.0;
-                QPointF midpoint;
-                if (traceArcBetween(start, end, &arcPath, &arcLength,
-                                    &midpoint)) {
-                    if (!arcPath.isEmpty()) {
-                        arcPath.removeFirst();
-                    }
-                    traced.append(arcPath);
-                    measurement.edgeLengths.append(arcLength);
-                    measurement.edgeMidpoints.append(midpoint);
-                    measurement.edgeStarts.append(start);
-                    measurement.edgeEnds.append(end);
-                } else {
-                    traced.append(end);
-                    measurement.edgeLengths.append(
-                        QLineF(start, end).length());
-                    measurement.edgeMidpoints.append((start + end) * 0.5);
-                    measurement.edgeStarts.append(start);
-                    measurement.edgeEnds.append(end);
-                }
+                boundary.append(boundary.first());
             }
-            if (traced.size() > 1
-                && QLineF(traced.first(), traced.last()).length()
-                    < snapRadiusWorld() * 0.1) {
-                traced.removeLast();
-            }
-            measurement.points = traced;
+            // Polygon dimensions use the measured path itself. Trace line
+            // and arc edges immediately so the first segment previews while
+            // the cursor is still moving, not only after closure.
+            populateTracedMeasurement(measurement, boundary);
         }
         break;
     case ToolMode::CircleArea:
@@ -5974,7 +6011,9 @@ QString CadView::hitMeasurementAt(const QPointF &screenPoint) const
         if (measurement.type == MeasurementType::Rectangle
             && points.size() >= 4) {
             const AnnotationStyleMetrics styleMetrics =
-                annotationStyleMetrics(m_settings.annotationStyle);
+                annotationStyleMetrics(
+                    m_settings.annotationStyle,
+                    m_settings.annotationLineWidth);
             const double geometryScale = annotationGeometryScale();
             const double offsetPixels = qMax(
                 18.0,
@@ -6548,40 +6587,86 @@ bool CadView::traceArcBetween(const QPointF &start, const QPointF &end,
     if (!m_document || !path || !length || !midpoint) {
         return false;
     }
-    const double tolerance = 5.0 / qMax(1.0e-12, m_scale);
+    const double tolerance = 6.0 / qMax(1.0e-12, m_scale);
     const QRectF box(start, end);
     const QVector<int> candidates = m_spatialIndex.query(
         box.normalized().adjusted(-tolerance, -tolerance, tolerance,
                                   tolerance),
         512);
+    const auto normalizedAngle = [](double angle) {
+        while (angle < 0.0) {
+            angle += 2.0 * kPi;
+        }
+        while (angle >= 2.0 * kPi) {
+            angle -= 2.0 * kPi;
+        }
+        return angle;
+    };
     for (int index : candidates) {
         const CadEntity &entity = m_document->entities[index];
         const CadLayer *layer = m_document->layerOf(entity);
         if ((layer && !layer->visible)
             || entity.type != CadEntityType::Arc
-            || entity.points.size() < 2) {
+            || entity.points.size() < 2
+            || entity.radius <= 1.0e-9) {
             continue;
         }
-        bool forward =
-            QLineF(entity.points.first(), start).length() <= tolerance
-            && QLineF(entity.points.last(), end).length() <= tolerance;
-        const bool reverse =
-            QLineF(entity.points.last(), start).length() <= tolerance
-            && QLineF(entity.points.first(), end).length() <= tolerance;
-        if (!forward && !reverse) {
+        const auto onArc = [&](const QPointF &point, double *angle) {
+            const QPointF radial = point - entity.center;
+            const double distance =
+                std::hypot(radial.x(), radial.y());
+            if (qAbs(distance - entity.radius) > tolerance) {
+                return false;
+            }
+            const double candidateAngle =
+                std::atan2(radial.y(), radial.x());
+            const double entitySweep = normalizedAngle(
+                entity.endAngle - entity.startAngle);
+            const double parameter = normalizedAngle(
+                candidateAngle - entity.startAngle);
+            const double angularTolerance =
+                tolerance / qMax(1.0e-9, entity.radius) + 1.0e-6;
+            if (parameter > entitySweep + angularTolerance
+                && parameter
+                    < 2.0 * kPi - angularTolerance) {
+                return false;
+            }
+            if (angle) {
+                *angle = normalizedAngle(candidateAngle);
+            }
+            return true;
+        };
+        double startAngle = 0.0;
+        double endAngle = 0.0;
+        if (!onArc(start, &startAngle) || !onArc(end, &endAngle)) {
             continue;
         }
-        *path = entity.points;
-        if (reverse) {
-            std::reverse(path->begin(), path->end());
+        const double forwardSweep =
+            normalizedAngle(endAngle - startAngle);
+        const double reverseSweep =
+            normalizedAngle(startAngle - endAngle);
+        if (qMin(forwardSweep, reverseSweep) < 1.0e-7) {
+            continue;
         }
-        double sweep = entity.endAngle - entity.startAngle;
-        while (sweep <= 0.0) {
-            sweep += 2.0 * kPi;
+        // Follow the shorter sub-arc on the clicked entity. Both endpoints
+        // may be interior points, so requiring exact source endpoints loses
+        // valid arc edges in polygons.
+        double signedSweep = forwardSweep <= reverseSweep
+            ? forwardSweep : -reverseSweep;
+        const int steps = qBound(
+            8, int(std::ceil(qAbs(signedSweep) / (kPi / 18.0))), 48);
+        path->clear();
+        path->reserve(steps + 1);
+        for (int step = 0; step <= steps; ++step) {
+            const double angle = startAngle
+                + signedSweep * double(step) / double(steps);
+            path->append(
+                entity.center
+                + QPointF(std::cos(angle), std::sin(angle))
+                    * entity.radius);
         }
-        *length = entity.radius * sweep;
-        const double middleAngle =
-            entity.startAngle + sweep * 0.5;
+        *length = entity.radius * qAbs(signedSweep);
+        const double middleAngle = startAngle + signedSweep * 0.5;
         *midpoint = entity.center
             + QPointF(std::cos(middleAngle), std::sin(middleAngle))
                 * entity.radius;
@@ -6663,8 +6748,9 @@ QString CadView::toolPrompt() const
         return m_awaitingLabel
             ? QStringLiteral("单击放置连续测量总长标注")
             : QStringLiteral(
-                "连续测量：左键选节点；右键、Enter、双击或工具栏"
-                "“完成当前测量”结束路径，再单击放置总长标注");
+                "连续测量：选节点，或点击圆弧端点/弧上点自动识别圆弧；"
+                "右键、Enter、双击或工具栏“完成当前测量”结束路径，"
+                "再单击放置总长标注");
     case ToolMode::Batch:
         return m_awaitingLabel
             ? QStringLiteral("单击确定批量标注偏移位置")
@@ -6676,7 +6762,9 @@ QString CadView::toolPrompt() const
     case ToolMode::Polygon:
         return m_awaitingLabel
             ? QStringLiteral("单击放置多边形面积/周长标注")
-            : QStringLiteral("多边形测量：选点，单击起点或双击闭合");
+            : QStringLiteral(
+                "多边形测量：选点；相邻两点位于同一圆弧时自动识别"
+                "弧段。单击起点或双击闭合");
     case ToolMode::CircleArea:
         return m_awaitingLabel
             ? QStringLiteral("在圆内单击放置面积与周长标注")

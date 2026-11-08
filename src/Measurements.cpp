@@ -417,7 +417,8 @@ AnnotationStyle annotationStyleFromKey(const QString &key,
     return fallback;
 }
 
-AnnotationStyleMetrics annotationStyleMetrics(AnnotationStyle style)
+AnnotationStyleMetrics annotationStyleMetrics(
+    AnnotationStyle style, double lineWidthOverride)
 {
     AnnotationStyleMetrics metrics;
     switch (style) {
@@ -477,6 +478,9 @@ AnnotationStyleMetrics annotationStyleMetrics(AnnotationStyle style)
         metrics.textGap = 7.5;
         metrics.marker = AnnotationMarker::EndBar;
         break;
+    }
+    if (lineWidthOverride > 0.0) {
+        metrics.lineWidth = qBound(0.5, lineWidthOverride, 4.0);
     }
     return metrics;
 }
@@ -888,6 +892,8 @@ bool writeAnnotationFile(const QString &drawingPath,
     root.insert(QStringLiteral("areaPrecision"), settings.areaPrecision);
     root.insert(QStringLiteral("dimensionTextScale"),
                 qBound(0.5, settings.dimensionTextScale, 2.5));
+    root.insert(QStringLiteral("annotationLineWidth"),
+                qBound(0.5, settings.annotationLineWidth, 4.0));
     root.insert(QStringLiteral("annotationScaleWithDrawing"),
                 settings.annotationScaleWithDrawing);
     root.insert(QStringLiteral("annotationColor"),
@@ -1077,6 +1083,11 @@ bool loadAnnotations(const QString &drawingPath, CadDocument &document,
             root.value(QStringLiteral("dimensionTextScale"))
                 .toDouble(settings->dimensionTextScale),
             2.5);
+        settings->annotationLineWidth = qBound(
+            0.5,
+            root.value(QStringLiteral("annotationLineWidth"))
+                .toDouble(settings->annotationLineWidth),
+            4.0);
         settings->annotationScaleWithDrawing =
             root.value(QStringLiteral("annotationScaleWithDrawing"))
                 .toBool(settings->annotationScaleWithDrawing);
