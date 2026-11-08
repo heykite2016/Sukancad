@@ -1,6 +1,6 @@
 # 构建与依赖
 
-本文记录速看CAD `2.0.2` 已验证的构建方式。项目主要开发和发布环境为 macOS；Windows x64 通过 llvm-mingw 交叉编译。
+本文记录速看CAD `2.0.3` 已验证的构建方式。项目主要开发和发布环境为 macOS；Windows x64 通过 llvm-mingw 交叉编译。
 
 ## 工具链
 
@@ -75,6 +75,33 @@ ctest --test-dir build --output-on-failure
 
 提交修改前至少运行全部三个测试。
 
+## 内存与生命周期检查
+
+发布前使用 AddressSanitizer 构建并运行同一组测试：
+
+```bash
+cmake -S . -B build-asan -G Ninja \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_PREFIX_PATH="$HOME/Qt/6.8.3/macos" \
+  -DCMAKE_C_FLAGS="-fsanitize=address -fno-omit-frame-pointer" \
+  -DCMAKE_CXX_FLAGS="-fsanitize=address -fno-omit-frame-pointer" \
+  -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address"
+cmake --build build-asan -j"$(sysctl -n hw.ncpu)"
+ASAN_OPTIONS=halt_on_error=1 \
+  ctest --test-dir build-asan --output-on-failure
+```
+
+Apple Clang 的 ASan 不支持 `detect_leaks`；macOS 使用系统 `leaks` 检查
+Objective-C/C++ 堆对象：
+
+```bash
+leaks --atExit -- build/cadview_interaction_tests
+```
+
+Qt 和系统框架可能保留一次性全局缓存；发布判断以项目对象、重复打开/关闭图纸和
+重复打开设置窗口后的稳定内存为准。浮动 `QDockWidget`、`QToolBar` 必须随主窗口
+关闭，画布缓存和打印预览同时受像素预算限制。
+
 ## macOS 发布包
 
 ```bash
@@ -86,8 +113,8 @@ export CADLENS_MAC_PDFIUM_ROOT="$HOME/Library/Caches/CadLens/pdfium/chromium-812
 
 ```text
 dist/CadLens.app
-dist/CadLens-2.0.2-macos12-universal.dmg
-dist/CadLens-2.0.2-macos12-universal.pkg
+dist/CadLens-2.0.3-macos12-universal.dmg
+dist/CadLens-2.0.3-macos12-universal.pkg
 ```
 
 macOS 最低版本为 `12.0`，架构为 `x86_64` 和 `arm64`。本地发布脚本使用 ad-hoc hardened runtime 签名，不能替代 Developer ID 签名和 Apple 公证。
@@ -130,7 +157,7 @@ CADLENS_WIN_BUILD_DIR="$PWD/build-win64-release" \
 产物为：
 
 ```text
-dist/CadLens-2.0.2-windows10-x64-portable.zip
+dist/CadLens-2.0.3-windows10-x64-portable.zip
 ```
 
 包内包含 Qt、PDFium 和 MinGW 运行库。LibreDWG、libdxfrw 和 libiconv 静态链接进程序。

@@ -1,4 +1,4 @@
-# 速看CAD 2.0.2
+# 速看CAD 2.0.3
 
 本地只读查看 DWG、DXF、PDF，提供施工图测量、矢量标注和多页打印。
 
@@ -7,15 +7,15 @@
 ## 下载
 
 - macOS 12+，Intel 与 Apple Silicon：
-  [PKG](https://github.com/heykite2016/Sukancad/releases/download/v2.0.2/CadLens-2.0.2-macos12-universal.pkg)
-  · [DMG](https://github.com/heykite2016/Sukancad/releases/download/v2.0.2/CadLens-2.0.2-macos12-universal.dmg)
+  [PKG](https://github.com/heykite2016/Sukancad/releases/download/v2.0.3/CadLens-2.0.3-macos12-universal.pkg)
+  · [DMG](https://github.com/heykite2016/Sukancad/releases/download/v2.0.3/CadLens-2.0.3-macos12-universal.dmg)
 - Windows 10+ x64：
-  [免安装 ZIP](https://github.com/heykite2016/Sukancad/releases/download/v2.0.2/CadLens-2.0.2-windows10-x64-portable.zip)
+  [免安装 ZIP](https://github.com/heykite2016/Sukancad/releases/download/v2.0.3/CadLens-2.0.3-windows10-x64-portable.zip)
 - Android arm64 核心移植版：
-  [APK](https://github.com/heykite2016/Sukancad/releases/download/v2.0.2/CadLens-2.0.2-android-arm64.apk)
+  [APK](https://github.com/heykite2016/Sukancad/releases/download/v2.0.3/CadLens-2.0.3-android-arm64.apk)
   · [移植范围](ANDROID.md)
-- [SHA-256 与全部发布文件](https://github.com/heykite2016/Sukancad/releases/tag/v2.0.2)
-- Gitee：[源码](https://gitee.com/FanieWang/Sukancad) · [发布页](https://gitee.com/FanieWang/Sukancad/releases/tag/v2.0.2)
+- [SHA-256 与全部发布文件](https://github.com/heykite2016/Sukancad/releases/tag/v2.0.3)
+- Gitee：[源码](https://gitee.com/FanieWang/Sukancad) · [发布页](https://gitee.com/FanieWang/Sukancad/releases/tag/v2.0.3)
 
 macOS 为 ad-hoc 签名，未做 Developer ID 公证。Windows 包未使用商业代码签名证书。
 
@@ -27,6 +27,9 @@ macOS 为 ad-hoc 签名，未做 Developer ID 公证。Windows 包未使用商�
 - 测量：对齐、线性、连续、批量、矩形、多边形、圆面积、填充面积、侧面积、半径、角度、弧长。
 - 标注：实时预览、文字注释、比例校准、拖动、备注、显隐、撤销、重做、整体删除与批量删除。
 - 尺寸样式：中国室内常用、大号建筑斜线、机械 ISO-25、工程开口箭头、小数圆点、紧凑端线。
+- 画布质量：一般 / 精细 / 极致三档；状态栏支持 CAD 线宽显隐，画布始终抗锯齿。
+- 标注线宽可单独设置；多边形沿实际路径逐段标注，并自动识别相邻点之间的圆弧段。
+- 连续测量支持点击圆弧端点或弧上点识别整段圆弧；打印预览使用独立高精度离屏渲染。
 - 输出：SVG、600/1200/2400 DPI 打印、多页打印、打印到 PDF、布局图框批量打印。
 - 命令行只接受英文 ASCII 命令；测量与标注自动保存到本机。
 - 原始图纸始终只读，不会写回 DWG、DXF 或 PDF。
@@ -39,7 +42,7 @@ macOS 为 ad-hoc 签名，未做 Developer ID 公证。Windows 包未使用商�
 1. 打开 DWG、DXF 或 PDF。
 2. 使用底部标签切换模型、布局或 PDF 页面。
 3. 点击主工具栏“测量工具”，选择测量类型；面板可悬浮或停靠左右。
-4. 点击主工具栏“设置”调整标注样式、单位、精度、颜色和十字光标。
+4. 点击主工具栏“设置”调整标注样式、标注线宽、画布质量、单位、精度、颜色和十字光标。
 5. `Ctrl+S` 保存标注；关闭图纸后再次打开会自动恢复。
 
 常用快捷键：

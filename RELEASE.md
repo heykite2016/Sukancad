@@ -101,14 +101,14 @@ shasum -a 256 -c Sukancad-<version>-SHA256SUMS.txt
 确认工作树内容、测试和产物后创建带注释标签：
 
 ```bash
-git tag -a v2.0.2 -m "Sukancad 2.0.2"
-git show --stat v2.0.2
+git tag -a v2.0.3 -m "Sukancad 2.0.3"
+git show --stat v2.0.3
 ```
 
 如使用签名标签：
 
 ```bash
-git tag -s v2.0.2 -m "Sukancad 2.0.2"
+git tag -s v2.0.3 -m "Sukancad 2.0.3"
 ```
 
 不要在未确认提交内容前创建或推送标签。
@@ -139,8 +139,8 @@ Release 正文可直接采用 `CHANGELOG.md` 中对应版本段落，并补充�
 ## 10. 发布后检查
 
 ```bash
-git ls-remote --tags origin 'refs/tags/v2.0.2'
-git ls-remote --tags gitee 'refs/tags/v2.0.2'
+git ls-remote --tags origin 'refs/tags/v2.0.3'
+git ls-remote --tags gitee 'refs/tags/v2.0.3'
 ```
 
 再用未登录浏览器检查下载链接，确认 GitHub 和 Gitee 均可访问。
