@@ -1,7 +1,6 @@
 package com.sukancad.cad
 
 import android.content.Context
-import android.os.Build
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -388,26 +387,21 @@ class DrawingView(context: Context) : android.view.View(context) {
     private lateinit var scaleDetector: ScaleGestureDetector
     private lateinit var gestureDetector: GestureDetector
     private var snapPoint: Pair<Double, Double>? = null
-    private val selectionLiftPx = 52f * resources.displayMetrics.density
     private var pointSelecting = false
     private var editingPendingIndex = -1
-    private var editingHandleOffset = Pair(0f, 0f)
-    private var selectionScreen = Pair(0f, 0f)
     private var selectionWorld: Pair<Double, Double>? = null
     private var angleFirstSegment: SegmentHit? = null
-    private val pointMagnifier: android.widget.Magnifier? by lazy {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            val density = resources.displayMetrics.density
-            android.widget.Magnifier.Builder(this)
-                .setSize((150 * density).toInt(), (105 * density).toInt())
-                .setCornerRadius(16f * density)
-                .setInitialZoom(2.0f)
-                .build()
-        } else {
-            null
-        }
-    }
+    private val mouseDensity = resources.displayMetrics.density
+    private val mouseTouchSlop = 5f * mouseDensity
 
+    // CAD 快速看图移动端的虚拟鼠标：拖动鼠标本体移动准星，轻点鼠标本体确认选点。
+    // 准星与鼠标作为一个整体移动，手指始终落在准星右下方，不遮挡捕捉点。
+    private var virtualMouseX = Float.NaN
+    private var virtualMouseY = Float.NaN
+    private var virtualMouseDragging = false
+    private var virtualMouseMoved = false
+    private var virtualMouseDownX = 0f
+    private var virtualMouseDownY = 0f
     init {
         scaleDetector = ScaleGestureDetector(context,
             object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
@@ -476,6 +470,10 @@ class DrawingView(context: Context) : android.view.View(context) {
         tapHint = null
         angleFirstSegment = null
         picked = null
+        if (m != MeasureMode.NONE && m != MeasureMode.SKETCH) {
+            ensureVirtualMouse()
+            updateVirtualMouseSelection()
+        }
         updateResultPanel()
         notifyInteractionState()
         invalidate()
@@ -515,6 +513,7 @@ class DrawingView(context: Context) : android.view.View(context) {
             }
             else -> Unit
         }
+        if (mode != MeasureMode.NONE) setMode(MeasureMode.NONE)
     }
 
     fun undoPendingPoint() {
@@ -549,6 +548,91 @@ class DrawingView(context: Context) : android.view.View(context) {
         setMode(MeasureMode.NONE)
     }
 
+    /** 删除当前正在编辑的尺寸或标注；尺寸使用编辑后的最新结果。 */
+    fun deleteEditingObject(): Boolean {
+        val measurement = editingMeasurement
+        val annotation = editingAnnotation
+        val removed = when {
+            measurement != null -> measurements.remove(measurement)
+            annotation != null -> annotations.remove(annotation)
+            else -> false
+        }
+        if (removed) finishObjectEdit()
+        return removed
+    }
+
+    internal fun editingObjectLabel(): String {
+        editingMeasurement?.let { return it.label(unitScale) }
+        val annotation = editingAnnotation ?: return ""
+        return annotation.text.takeIf { it.isNotBlank() } ?: "标注"
+    }
+
+    internal fun virtualMouseCursorForTest(): Pair<Float, Float> {
+        ensureVirtualMouse()
+        return Pair(virtualMouseX, virtualMouseY)
+    }
+
+    internal fun virtualMouseButtonForTest(): Pair<Float, Float> {
+        ensureVirtualMouse()
+        return mouseButtonCenter()
+    }
+
+    internal fun hitMeasurementAtScreenForTest(x: Float, y: Float): Measurement? =
+        measurementAt(screenToWorld(x, y))
+
+    internal fun worldToScreenForTest(x: Double, y: Double): Pair<Float, Float> =
+        Pair(worldToScreenX(x).toFloat(), worldToScreenY(y).toFloat())
+
+    private fun mouseButtonCenter(): Pair<Float, Float> =
+        Pair(virtualMouseX + 42f * mouseDensity,
+             virtualMouseY + 51f * mouseDensity)
+
+    private fun ensureVirtualMouse() {
+        if (virtualMouseX.isFinite() && virtualMouseY.isFinite()) return
+        if (width <= 0 || height <= 0) return
+        virtualMouseX = (width * 0.78f).coerceIn(
+            24f * mouseDensity,
+            (width - 84f * mouseDensity).coerceAtLeast(24f * mouseDensity),
+        )
+        virtualMouseY = (height - 220f * mouseDensity).coerceAtLeast(
+            40f * mouseDensity,
+        )
+    }
+
+    private fun moveVirtualMouse(dx: Float, dy: Float) {
+        ensureVirtualMouse()
+        virtualMouseX = (virtualMouseX + dx).coerceIn(
+            10f * mouseDensity,
+            (width - 84f * mouseDensity).coerceAtLeast(10f * mouseDensity),
+        )
+        virtualMouseY = (virtualMouseY + dy).coerceIn(
+            10f * mouseDensity,
+            (height - 84f * mouseDensity).coerceAtLeast(10f * mouseDensity),
+        )
+        updateVirtualMouseSelection()
+        invalidate()
+    }
+
+    private fun updateVirtualMouseSelection() {
+        if (!virtualMouseX.isFinite() || !virtualMouseY.isFinite()) return
+        val world = screenToWorld(virtualMouseX, virtualMouseY)
+        val snapped = findSnap(world) ?: world
+        selectionWorld = snapped
+    }
+
+    private fun virtualMouseHit(x: Float, y: Float): Boolean {
+        ensureVirtualMouse()
+        if (!virtualMouseX.isFinite() || !virtualMouseY.isFinite()) return false
+        val (cx, cy) = mouseButtonCenter()
+        val r = 31f * mouseDensity
+        return hypot(x - cx, y - cy) <= r
+    }
+
+    private fun clickVirtualMouse() {
+        updateVirtualMouseSelection()
+        commitPointSelection()
+    }
+
     private fun pendingHandleIndexAt(sx: Float, sy: Float): Int {
         val radius = 34f * resources.displayMetrics.density
         var best = -1
@@ -568,14 +652,10 @@ class DrawingView(context: Context) : android.view.View(context) {
         return best
     }
 
-    private fun updatePointSelection(fingerX: Float, fingerY: Float) {
-        val x = fingerX + editingHandleOffset.first
-        val y = (fingerY + editingHandleOffset.second).coerceAtLeast(8f)
-        val world = screenToWorld(x, y)
+    private fun updateHandleSelection(fingerX: Float, fingerY: Float) {
+        val world = screenToWorld(fingerX, fingerY)
         val snapped = findSnap(world) ?: world
-        selectionScreen = Pair(x, y)
         selectionWorld = snapped
-        pointMagnifier?.show(x, y)
         invalidate()
     }
 
@@ -1451,33 +1531,93 @@ class DrawingView(context: Context) : android.view.View(context) {
         onMeasurementChanged?.invoke(sb.toString())
     }
 
-    /** 浏览模式命中测量线或圆弧附近，返回最上层测量。 */
+    /** 浏览模式命中尺寸的线、界线、圆弧、圆点、箭头或文字，均返回整条测量。 */
     private fun measurementAt(world: Pair<Double, Double>): Measurement? {
-        val sx = worldToScreenX(world.first)
-        val sy = worldToScreenY(world.second)
-        val tolerance = 24f * resources.displayMetrics.density
-        val sxf = sx.toFloat()
-        val syf = sy.toFloat()
+        val density = resources.displayMetrics.density
+        val tolerance = 24f * density
+        val sxf = worldToScreenX(world.first).toFloat()
+        val syf = worldToScreenY(world.second).toFloat()
         fun segDistance(ax: Float, ay: Float, bx: Float, by: Float): Float {
-            val dx = bx - ax
-            val dy = by - ay
-            val len2 = dx * dx + dy * dy
-            val t = if (len2 < 1e-6f) 0f
-            else (((sxf - ax) * dx + (syf - ay) * dy) / len2).coerceIn(0f, 1f)
-            return hypot(
-                (sxf - (ax + t * dx)).toDouble(),
-                (syf - (ay + t * dy)).toDouble(),
-            ).toFloat()
+            return screenSegmentDistance(sxf, syf, ax, ay, bx, by)
+        }
+        fun hitLabel(m: Measurement): Boolean {
+            val anchor = measurementLabelAnchor(m) ?: return false
+            val label = m.label(unitScale).ifBlank { return false }
+            measureTextPaint.textSize = 15f * density
+            val lines = label.split("\n")
+            val halfWidth = lines.maxOf { measureTextPaint.measureText(it) } / 2f +
+                10f * density
+            val height = lines.size * 18f * density
+            val centerY = anchor.second - height / 2f - 4f * density
+            return abs(sxf - anchor.first) <= halfWidth + tolerance &&
+                abs(syf - centerY) <= height / 2f + tolerance
+        }
+        fun hitArc(cx: Float, cy: Float, radius: Float,
+                   start: Double, sweep: Double): Boolean {
+            if (radius <= 0.5f || abs(sweep) < 1e-5) return false
+            val steps = max(8, (abs(sweep) * 18).toInt())
+            var previous = Math.toRadians(start)
+            for (i in 1..steps) {
+                val current = Math.toRadians(start + sweep * i / steps)
+                val ax = cx + radius * kotlin.math.cos(previous).toFloat()
+                val ay = cy + radius * kotlin.math.sin(previous).toFloat()
+                val bx = cx + radius * kotlin.math.cos(current).toFloat()
+                val by = cy + radius * kotlin.math.sin(current).toFloat()
+                if (segDistance(ax, ay, bx, by) <= tolerance) return true
+                previous = current
+            }
+            return false
+        }
+        fun pointInScreenPolygon(points: List<Pair<Double, Double>>): Boolean {
+            if (points.size < 3) return false
+            var inside = false
+            var j = points.lastIndex
+            for (i in points.indices) {
+                val xi = worldToScreenX(points[i].first)
+                val yi = worldToScreenY(points[i].second)
+                val xj = worldToScreenX(points[j].first)
+                val yj = worldToScreenY(points[j].second)
+                if ((yi > syf) != (yj > syf) &&
+                    sxf < (xj - xi) * (syf - yi) / (yj - yi) + xi) {
+                    inside = !inside
+                }
+                j = i
+            }
+            return inside
         }
         for (m in measurements.asReversed()) {
             val pts = m.points
             if (pts.isEmpty()) continue
+            if (hitLabel(m)) return m
             if (m.kind == MeasureMode.RADIUS || m.kind == MeasureMode.ARC) {
                 if (m.radius <= 0.0) continue
-                val cx = worldToScreenX(pts[0].first)
-                val cy = worldToScreenY(pts[0].second)
-                if (abs(hypot(sx - cx, sy - cy) - m.radius * scale) <= tolerance) {
-                    return m
+                val cx = worldToScreenX(pts[0].first).toFloat()
+                val cy = worldToScreenY(pts[0].second).toFloat()
+                val radius = (m.radius * scale).toFloat()
+                when (m.kind) {
+                    MeasureMode.RADIUS -> {
+                        if (abs(hypot(sxf - cx, syf - cy) - radius) <= tolerance) return m
+                        if (segDistance(cx, cy,
+                                cx + radius * 0.7071f, cy - radius * 0.7071f) <= tolerance) {
+                            return m
+                        }
+                    }
+                    MeasureMode.ARC -> {
+                        if (pts.size >= 3) {
+                            val a0 = Math.toDegrees(atan2(
+                                pts[1].second - pts[0].second,
+                                pts[1].first - pts[0].first,
+                            ))
+                            val a1 = Math.toDegrees(atan2(
+                                pts[2].second - pts[0].second,
+                                pts[2].first - pts[0].first,
+                            ))
+                            var sweep = a1 - a0
+                            while (sweep <= 0) sweep += 360.0
+                            if (hitArc(cx, cy, radius, -a1, sweep)) return m
+                        }
+                    }
+                    else -> Unit
                 }
                 continue
             }
@@ -1492,12 +1632,25 @@ class DrawingView(context: Context) : android.view.View(context) {
                     segDistance(vx, vy, bx, by) <= tolerance) {
                     return m
                 }
+                val a1 = atan2((ay - vy).toDouble(), (ax - vx).toDouble())
+                var sweep = atan2((by - vy).toDouble(), (bx - vx).toDouble()) - a1
+                while (sweep <= -Math.PI) sweep += 2 * Math.PI
+                while (sweep > Math.PI) sweep -= 2 * Math.PI
+                val arcRadius = 52f * density
+                if (hitArc(vx, vy, arcRadius,
+                        Math.toDegrees(a1), Math.toDegrees(sweep))) {
+                    return m
+                }
                 val label = pts.getOrNull(3)
-                if (label != null) {
-                    val lx = worldToScreenX(label.first)
-                    val ly = worldToScreenY(label.second)
-                    if (abs(sx - lx) <= tolerance * 2 &&
-                        abs(sy - ly) <= tolerance) return m
+                if (label != null && hypot(lxFloat(label.first) - vx,
+                        lyFloat(label.second) - vy) >
+                    46.0 * density
+                ) {
+                    val midAngle = a1 + sweep / 2
+                    val sx2 = vx + arcRadius * kotlin.math.cos(midAngle).toFloat()
+                    val sy2 = vy + arcRadius * kotlin.math.sin(midAngle).toFloat()
+                    if (segDistance(sx2, sy2, lxFloat(label.first),
+                            lyFloat(label.second)) <= tolerance) return m
                 }
                 continue
             }
@@ -1514,9 +1667,66 @@ class DrawingView(context: Context) : android.view.View(context) {
                 val bx = worldToScreenX(pts.first().first).toFloat()
                 val by = worldToScreenY(pts.first().second).toFloat()
                 if (segDistance(ax, ay, bx, by) <= tolerance) return m
+                if (pointInScreenPolygon(pts)) return m
             }
         }
         return null
+    }
+
+    private fun lxFloat(x: Double) = worldToScreenX(x).toFloat()
+    private fun lyFloat(y: Double) = worldToScreenY(y).toFloat()
+
+    private fun screenSegmentDistance(px: Float, py: Float,
+                                      ax: Float, ay: Float,
+                                      bx: Float, by: Float): Float {
+        val dx = bx - ax
+        val dy = by - ay
+        val len2 = dx * dx + dy * dy
+        val t = if (len2 < 1e-6f) 0f
+        else (((px - ax) * dx + (py - ay) * dy) / len2).coerceIn(0f, 1f)
+        return hypot(
+            (px - (ax + t * dx)).toDouble(),
+            (py - (ay + t * dy)).toDouble(),
+        ).toFloat()
+    }
+
+    private fun measurementLabelAnchor(m: Measurement): Pair<Float, Float>? {
+        val pts = m.points
+        if (pts.isEmpty()) return null
+        return when (m.kind) {
+            MeasureMode.RADIUS -> {
+                if (m.radius <= 0.0) null else {
+                    val cx = worldToScreenX(pts[0].first).toFloat()
+                    val cy = worldToScreenY(pts[0].second).toFloat()
+                    val r = (m.radius * scale).toFloat()
+                    Pair(cx + r * 0.5f, cy - r * 0.5f)
+                }
+            }
+            MeasureMode.ANGLE -> {
+                val label = pts.getOrNull(3) ?: pts[0]
+                Pair(lxFloat(label.first), lyFloat(label.second))
+            }
+            MeasureMode.ARC -> {
+                val label = pts.getOrNull(3) ?: pts[0]
+                Pair(lxFloat(label.first), lyFloat(label.second))
+            }
+            MeasureMode.AREA -> {
+                var cx = 0.0
+                var cy = 0.0
+                for (p in pts) { cx += p.first; cy += p.second }
+                Pair(lxFloat(cx / pts.size), lyFloat(cy / pts.size))
+            }
+            MeasureMode.LENGTH, MeasureMode.CONTINUOUS -> {
+                if (pts.size < 2) null else {
+                    val a = pts[pts.lastIndex - 1]
+                    val b = pts.last()
+                    Pair(lxFloat((a.first + b.first) / 2.0),
+                        lyFloat((a.second + b.second) / 2.0))
+                }
+            }
+            MeasureMode.COORD -> Pair(lxFloat(pts[0].first), lyFloat(pts[0].second))
+            else -> null
+        }
     }
 
     /** 浏览模式命中已有文字/手绘标注，优先于底图图元。 */
@@ -1902,6 +2112,9 @@ class DrawingView(context: Context) : android.view.View(context) {
         drawPointSelection(canvas)
         drawAnnotations(canvas)
         drawPins(canvas)
+        if (mode != MeasureMode.NONE && mode != MeasureMode.SKETCH) {
+            drawVirtualMouse(canvas)
+        }
         // 拾取高亮：黄色虚线框出选中图元 bbox
         picked?.let {
             snapPaint.color = 0xFFFFC94D.toInt()
@@ -1928,14 +2141,27 @@ class DrawingView(context: Context) : android.view.View(context) {
         measurePaint.strokeWidth = 2.5f * density
         pinTextPaint.color = measureColor
         pinTextPaint.textSize = 12f * density
+        val half = 7f * density
         for (i in editingPoints.indices) {
+            val measurement = editingMeasurement
+            if (measurement != null &&
+                (measurement.kind == MeasureMode.ANGLE ||
+                    measurement.kind == MeasureMode.ARC) &&
+                i == 3
+            ) {
+                continue
+            }
             val point = editingPoints[i]
             val x = worldToScreenX(point.first).toFloat()
             val y = worldToScreenY(point.second).toFloat()
-            canvas.drawCircle(x, y, 8f * density, measureFill)
-            canvas.drawCircle(x, y, 5.5f * density, measurePaint)
-            canvas.drawText((i + 1).toString(), x, y - 10f * density, pinTextPaint)
+            val oldColor = measurePaint.color
+            measureFill.color = 0xFFFFFFFF.toInt()
+            canvas.drawRect(x - half, y - half, x + half, y + half, measureFill)
+            measurePaint.color = measureColor
+            canvas.drawRect(x - half, y - half, x + half, y + half, measurePaint)
+            measurePaint.color = oldColor
         }
+        measureFill.color = withAlpha(measureColor, 0x2E)
     }
 
     private fun drawEntity(canvas: Canvas, path: Path, doc: SkdwDocument,
@@ -2476,8 +2702,8 @@ class DrawingView(context: Context) : android.view.View(context) {
                     worldToScreenY(pending[i].second).toFloat(), measurePaint)
             }
         }
-        if (pointSelecting && selectionWorld != null && pending.isNotEmpty()
-            && editingPendingIndex < 0) {
+        if (selectionWorld != null && pending.isNotEmpty()
+            && editingPendingIndex < 0 && !isEditingObject) {
             val a = pending.last()
             val b = selectionWorld!!
             measurePaint.color = withAlpha(measureColor, 0xAA)
@@ -2512,8 +2738,8 @@ class DrawingView(context: Context) : android.view.View(context) {
     }
 
     private fun drawPointSelection(canvas: Canvas) {
-        val selected = selectionWorld ?: return
         if (!pointSelecting) return
+        val selected = selectionWorld ?: return
         val x = worldToScreenX(selected.first).toFloat()
         val y = worldToScreenY(selected.second).toFloat()
         canvas.save()
@@ -2524,24 +2750,68 @@ class DrawingView(context: Context) : android.view.View(context) {
         canvas.drawLine(x + 8f, y, x + 28f, y, measurePaint)
         canvas.drawLine(x, y - 28f, x, y - 8f, measurePaint)
         canvas.drawLine(x, y + 8f, x, y + 28f, measurePaint)
-        // 手指到准星的引导线，明确“准星在手指上方”。
-        if (selectionScreen.second > y + 24f) {
-            measurePaint.color = 0x66FFC94D
-            measurePaint.strokeWidth = 1.5f
-            canvas.drawLine(x, y + 22f,
-                selectionScreen.first, selectionScreen.second, measurePaint)
-        }
         pinTextPaint.textSize = 20f
         pinTextPaint.color = 0xFFFFE08A.toInt()
-        canvas.drawText(
-            if (editingPendingIndex >= 0) "拖动调整，松开确认" else "松开确认选点",
-            x + 24f,
-            y - 24f,
-            pinTextPaint,
-        )
+        canvas.drawText("拖动调整，松开确认", x + 24f, y - 24f, pinTextPaint)
         canvas.restore()
         measurePaint.color = measureColor
         pinTextPaint.color = 0xFFFFFFFF.toInt()
+    }
+
+    /** 与 CAD 快速看图相同的浮动虚拟鼠标：准星负责定位，鼠标左键负责单击。 */
+    private fun drawVirtualMouse(canvas: Canvas) {
+        ensureVirtualMouse()
+        if (!virtualMouseX.isFinite() || !virtualMouseY.isFinite()) return
+        val x = virtualMouseX
+        val y = virtualMouseY
+        val density = mouseDensity
+        val mouseLeft = x + 16f * density
+        val mouseTop = y + 25f * density
+        val mouseRight = x + 68f * density
+        val mouseBottom = y + 77f * density
+
+        canvas.save()
+        measurePaint.style = Paint.Style.STROKE
+        measurePaint.strokeWidth = 2f * density
+        measurePaint.strokeCap = Paint.Cap.ROUND
+        measurePaint.color = 0xFFFFC94D.toInt()
+        canvas.drawCircle(x, y, 15f * density, measurePaint)
+        canvas.drawLine(x - 25f * density, y, x - 8f * density, y, measurePaint)
+        canvas.drawLine(x + 8f * density, y, x + 25f * density, y, measurePaint)
+        canvas.drawLine(x, y - 25f * density, x, y - 8f * density, measurePaint)
+        canvas.drawLine(x, y + 8f * density, x, y + 25f * density, measurePaint)
+        canvas.drawCircle(x, y, 2.4f * density, measurePaint)
+
+        measureFill.color = if (virtualMouseDragging)
+            0xFF394955.toInt() else 0xE62A3540.toInt()
+        val radius = 21f * density
+        canvas.drawRoundRect(
+            mouseLeft, mouseTop, mouseRight, mouseBottom,
+            radius, radius, measureFill,
+        )
+        measurePaint.color = 0xFFEAF2F7.toInt()
+        measurePaint.strokeWidth = 2f * density
+        canvas.drawRoundRect(
+            mouseLeft, mouseTop, mouseRight, mouseBottom,
+            radius, radius, measurePaint,
+        )
+        val splitX = (mouseLeft + mouseRight) / 2f
+        canvas.drawLine(
+            splitX, mouseTop + 8f * density,
+            splitX, mouseTop + 22f * density,
+            measurePaint,
+        )
+        measureFill.color = withAlpha(measureColor, 0xCC)
+        canvas.drawCircle(
+            splitX - 9f * density,
+            mouseTop + 13f * density,
+            3.2f * density,
+            measureFill,
+        )
+        canvas.restore()
+        measurePaint.strokeCap = Paint.Cap.BUTT
+        measurePaint.color = measureColor
+        measureFill.color = withAlpha(measureColor, 0x2E)
     }
 
     private fun drawOne(canvas: Canvas, m: Measurement) {
@@ -2730,27 +3000,26 @@ class DrawingView(context: Context) : android.view.View(context) {
             MotionEvent.ACTION_DOWN -> {
                 lastTouchX = event.x
                 lastTouchY = event.y
+                if (!isEditingObject && mode != MeasureMode.NONE &&
+                    mode != MeasureMode.SKETCH &&
+                    virtualMouseHit(event.x, event.y)) {
+                    ensureVirtualMouse()
+                    virtualMouseDragging = true
+                    virtualMouseMoved = false
+                    virtualMouseDownX = event.x
+                    virtualMouseDownY = event.y
+                    invalidate()
+                    return true
+                }
                 if ((mode != MeasureMode.NONE || isEditingObject) &&
                     mode != MeasureMode.SKETCH) {
-                    pointSelecting = true
                     editingPendingIndex = pendingHandleIndexAt(event.x, event.y)
                     if (editingPendingIndex >= 0) {
                         val points = if (isEditingObject) editingPoints else pending
                         val point = points[editingPendingIndex]
-                        val px = worldToScreenX(point.first).toFloat()
-                        val py = worldToScreenY(point.second).toFloat()
-                        editingHandleOffset = Pair(px - event.x, py - event.y)
+                        pointSelecting = true
                         selectionWorld = point
-                        selectionScreen = Pair(px, py)
-                    } else {
-                        editingHandleOffset = Pair(0f, -selectionLiftPx)
-                        val world = screenToWorld(
-                            event.x, (event.y - selectionLiftPx).coerceAtLeast(8f))
-                        selectionWorld = findSnap(world) ?: world
-                        selectionScreen = Pair(
-                            event.x, (event.y - selectionLiftPx).coerceAtLeast(8f))
                     }
-                    pointMagnifier?.show(selectionScreen.first, selectionScreen.second)
                     invalidate()
                     return true
                 }
@@ -2762,9 +3031,10 @@ class DrawingView(context: Context) : android.view.View(context) {
                 }
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
+                virtualMouseDragging = false
+                virtualMouseMoved = false
                 pointSelecting = false
                 editingPendingIndex = -1
-                pointMagnifier?.dismiss()
                 // 双指进入：平移基准取两指中点，避免第二根手指落下瞬间跳位
                 val mid = pointerMid(event, -1)
                 lastTouchX = mid.first
@@ -2777,8 +3047,20 @@ class DrawingView(context: Context) : android.view.View(context) {
                 lastTouchY = mid.second
             }
             MotionEvent.ACTION_MOVE -> {
+                if (virtualMouseDragging && event.pointerCount == 1) {
+                    val dx = event.x - lastTouchX
+                    val dy = event.y - lastTouchY
+                    lastTouchX = event.x
+                    lastTouchY = event.y
+                    if (hypot(event.x - virtualMouseDownX,
+                            event.y - virtualMouseDownY) > mouseTouchSlop) {
+                        virtualMouseMoved = true
+                    }
+                    moveVirtualMouse(dx, dy)
+                    return true
+                }
                 if (pointSelecting && event.pointerCount == 1) {
-                    updatePointSelection(event.x, event.y)
+                    updateHandleSelection(event.x, event.y)
                     return true
                 }
                 // 手绘模式：采点不拖图纸
@@ -2810,6 +3092,10 @@ class DrawingView(context: Context) : android.view.View(context) {
                     }
                     return true
                 }
+                if (mode != MeasureMode.NONE || isEditingObject) {
+                    // 测量/标注命令中，单指只操作准星和控制柄；图纸平移缩放使用双指。
+                    return true
+                }
                 val dx = event.x - lastTouchX
                 val dy = event.y - lastTouchY
                 lastTouchX = event.x
@@ -2821,14 +3107,21 @@ class DrawingView(context: Context) : android.view.View(context) {
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 dragging = false
                 snapPoint = null
+                if (virtualMouseDragging) {
+                    val click = event.actionMasked == MotionEvent.ACTION_UP &&
+                        !virtualMouseMoved
+                    virtualMouseDragging = false
+                    virtualMouseMoved = false
+                    if (click) clickVirtualMouse()
+                    invalidate()
+                    return true
+                }
                 if (pointSelecting) {
                     pointSelecting = false
-                    pointMagnifier?.dismiss()
                     if (event.actionMasked == MotionEvent.ACTION_UP) {
                         commitPointSelection()
                     }
                     editingPendingIndex = -1
-                    editingHandleOffset = Pair(0f, 0f)
                     selectionWorld = null
                     invalidate()
                     return true

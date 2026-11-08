@@ -1,4 +1,4 @@
-# 速看CAD 2.0.1
+# 速看CAD 2.0.2
 
 本地只读查看 DWG、DXF、PDF，提供施工图测量、矢量标注和多页打印。
 
@@ -7,15 +7,15 @@
 ## 下载
 
 - macOS 12+，Intel 与 Apple Silicon：
-  [PKG](https://github.com/heykite2016/Sukancad/releases/download/v2.0.1/CadLens-2.0.1-macos12-universal.pkg)
-  · [DMG](https://github.com/heykite2016/Sukancad/releases/download/v2.0.1/CadLens-2.0.1-macos12-universal.dmg)
+  [PKG](https://github.com/heykite2016/Sukancad/releases/download/v2.0.2/CadLens-2.0.2-macos12-universal.pkg)
+  · [DMG](https://github.com/heykite2016/Sukancad/releases/download/v2.0.2/CadLens-2.0.2-macos12-universal.dmg)
 - Windows 10+ x64：
-  [免安装 ZIP](https://github.com/heykite2016/Sukancad/releases/download/v2.0.1/CadLens-2.0.1-windows10-x64-portable.zip)
+  [免安装 ZIP](https://github.com/heykite2016/Sukancad/releases/download/v2.0.2/CadLens-2.0.2-windows10-x64-portable.zip)
 - Android arm64 核心移植版：
-  [APK](https://github.com/heykite2016/Sukancad/releases/download/v2.0.1/CadLens-2.0.1-android-arm64.apk)
+  [APK](https://github.com/heykite2016/Sukancad/releases/download/v2.0.2/CadLens-2.0.2-android-arm64.apk)
   · [移植范围](ANDROID.md)
-- [SHA-256 与全部发布文件](https://github.com/heykite2016/Sukancad/releases/tag/v2.0.1)
-- Gitee：[源码](https://gitee.com/FanieWang/Sukancad) · [发布页](https://gitee.com/FanieWang/Sukancad/releases/tag/v2.0.1)
+- [SHA-256 与全部发布文件](https://github.com/heykite2016/Sukancad/releases/tag/v2.0.2)
+- Gitee：[源码](https://gitee.com/FanieWang/Sukancad) · [发布页](https://gitee.com/FanieWang/Sukancad/releases/tag/v2.0.2)
 
 macOS 为 ad-hoc 签名，未做 Developer ID 公证。Windows 包未使用商业代码签名证书。
 
@@ -31,7 +31,8 @@ macOS 为 ad-hoc 签名，未做 Developer ID 公证。Windows 包未使用商�
 - 命令行只接受英文 ASCII 命令；测量与标注自动保存到本机。
 - 原始图纸始终只读，不会写回 DWG、DXF 或 PDF。
 - Android 端已移植 DWG/DXF 解析、布局、图层、外部参照、测量核心与文字标注；
-  支持 Canvas 自绘单排工具条、自动/手动比例校准、左滑文件管理；PDF 尚未移植。
+  测量点使用可拖动的浮动虚拟鼠标定位；点击尺寸线、尺寸文字或标注子图元可直接编辑，
+  白色方框拖动后实时重算，删除、完成和取消集中在动作条；PDF 尚未移植。
 
 ## 快速开始
 

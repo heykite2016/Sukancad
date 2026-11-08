@@ -1,6 +1,6 @@
 # 构建与依赖
 
-本文记录速看CAD `2.0.1` 已验证的构建方式。项目主要开发和发布环境为 macOS；Windows x64 通过 llvm-mingw 交叉编译。
+本文记录速看CAD `2.0.2` 已验证的构建方式。项目主要开发和发布环境为 macOS；Windows x64 通过 llvm-mingw 交叉编译。
 
 ## 工具链
 
@@ -86,8 +86,8 @@ export CADLENS_MAC_PDFIUM_ROOT="$HOME/Library/Caches/CadLens/pdfium/chromium-812
 
 ```text
 dist/CadLens.app
-dist/CadLens-2.0.1-macos12-universal.dmg
-dist/CadLens-2.0.1-macos12-universal.pkg
+dist/CadLens-2.0.2-macos12-universal.dmg
+dist/CadLens-2.0.2-macos12-universal.pkg
 ```
 
 macOS 最低版本为 `12.0`，架构为 `x86_64` 和 `arm64`。本地发布脚本使用 ad-hoc hardened runtime 签名，不能替代 Developer ID 签名和 Apple 公证。
@@ -130,7 +130,7 @@ CADLENS_WIN_BUILD_DIR="$PWD/build-win64-release" \
 产物为：
 
 ```text
-dist/CadLens-2.0.1-windows10-x64-portable.zip
+dist/CadLens-2.0.2-windows10-x64-portable.zip
 ```
 
 包内包含 Qt、PDFium 和 MinGW 运行库。LibreDWG、libdxfrw 和 libiconv 静态链接进程序。

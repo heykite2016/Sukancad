@@ -1,6 +1,6 @@
 # Android 移植说明
 
-当前 Android 版本为 `2.0.1`，是原生 Kotlin/Canvas 应用，不复用桌面端 Qt UI。
+当前 Android 版本为 `2.0.2`，是原生 Kotlin/Canvas 应用，不复用桌面端 Qt UI。
 
 ## 当前已移植
 
@@ -11,8 +11,11 @@
 - SKDW 二进制缓存。
 - Android Canvas 平移、双指缩放、图层显隐、文字查找和布局切换。
 - Canvas 自绘底栏和单排工具条，工具采用图标加文字，横向滑动，不弹多排大面板。
+- 测量选点使用浮动虚拟鼠标：拖动鼠标本体移动准星，轻点鼠标确认；双指继续平移/缩放图纸。
 - 测量：长度、连续、面积、角度、弧长、半径。
-- 角度测量按移动端习惯先点两条线段，再点文字落点。
+- 角度测量依次确认两条线段，再用虚拟鼠标确认文字落点。
+- 点击尺寸线、尺寸文字、圆弧、圆点或引线等任意子图元会选中整条标注，并直接显示白色端点方框。
+- 拖动白色方框实时重算尺寸；“删除”“完成”“取消”位于同一动作条，删除前二次确认。
 - 自动比例校准：从原图数字尺寸与对应线段的一致性推断比例。
 - 手动比例校准：拾取已知长度的两个端点后输入标注长度，与 PC 端流程一致。
 - 标注只保留文字标注；“标注管理”统一查看、定位、移动或删除测量和文字标注。
@@ -57,8 +60,8 @@ compileSdk/targetSdk 34
 产物：
 
 ```text
-dist/CadLens-2.0.1-android-arm64-debug.apk
-dist/CadLens-2.0.1-android-arm64.apk
+dist/CadLens-2.0.2-android-arm64-debug.apk
+dist/CadLens-2.0.2-android-arm64.apk
 ```
 
 直接使用 Gradle：
@@ -73,7 +76,7 @@ cd android
 
 ```bash
 adb devices -l
-adb install -r dist/CadLens-2.0.1-android-arm64.apk
+adb install -r dist/CadLens-2.0.2-android-arm64.apk
 ```
 
 部分 OPPO/OnePlus 设备首次安装会显示系统安装确认页，需要点击“继续安装”。
@@ -93,11 +96,12 @@ cd android
 ./gradlew :app:connectedDebugAndroidTest
 ```
 
-当前设备测试共 `11/11`，覆盖：
+当前设备测试共 `12/12`，覆盖：
 
 - 共享面积、周长、角度、圆和弧长。
 - DXF → LibreDWG → SKDW → Kotlin 文档模型。
-- 测量准星选点、控制柄拖动和已有测量端点修改。
+- 虚拟鼠标拖动与轻点选点、控制柄拖动和已有测量端点修改。
+- 点击尺寸线与尺寸文字选中整条标注，以及编辑后整条删除。
 - 连续测量操作栏收尾、角度两点选线加文字落点。
 - 自动比例校准样本识别。
 - ZIP 解压、清理压缩包、缓存清理不删图。

@@ -16,6 +16,33 @@ import java.util.zip.ZipOutputStream
 
 @RunWith(AndroidJUnit4::class)
 class CorePortTest {
+    private fun clickVirtualMouseAt(view: DrawingView, x: Float, y: Float) {
+        val cursor = view.virtualMouseCursorForTest()
+        val button = view.virtualMouseButtonForTest()
+        val dx = x - cursor.first
+        val dy = y - cursor.second
+        val now = SystemClock.uptimeMillis()
+        view.dispatchTouchEvent(
+            MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN,
+                button.first, button.second, 0))
+        if (dx != 0f || dy != 0f) {
+            view.dispatchTouchEvent(
+                MotionEvent.obtain(now, now + 20, MotionEvent.ACTION_MOVE,
+                    button.first + dx, button.second + dy, 0))
+        }
+        view.dispatchTouchEvent(
+            MotionEvent.obtain(now, now + 40, MotionEvent.ACTION_UP,
+                button.first + dx, button.second + dy, 0))
+
+        val movedButton = view.virtualMouseButtonForTest()
+        view.dispatchTouchEvent(
+            MotionEvent.obtain(now, now + 60, MotionEvent.ACTION_DOWN,
+                movedButton.first, movedButton.second, 0))
+        view.dispatchTouchEvent(
+            MotionEvent.obtain(now, now + 80, MotionEvent.ACTION_UP,
+                movedButton.first, movedButton.second, 0))
+    }
+
     @Test
     fun sharedGeometryMatchesDesktopCore() {
         val xs = doubleArrayOf(0.0, 10.0, 10.0, 0.0)
@@ -141,24 +168,17 @@ class CorePortTest {
                 layout(0, 0, 1000, 800)
                 setMode(MeasureMode.LENGTH)
             }
-            val start = SystemClock.uptimeMillis()
-            view.dispatchTouchEvent(
-                MotionEvent.obtain(start, start, MotionEvent.ACTION_DOWN,
-                    500f, 500f, 0))
-            view.dispatchTouchEvent(
-                MotionEvent.obtain(start, start + 20, MotionEvent.ACTION_UP,
-                    500f, 500f, 0))
+            clickVirtualMouseAt(view, 500f, 500f)
         }
         assertEquals(1, view.pendingPointCount)
         val original = view.pendingPointsSnapshot().single()
 
         instrumentation.runOnMainSync {
-            val density = view.resources.displayMetrics.density
-            val handleY = 500f - 52f * density
+            val (handleX, handleY) = view.virtualMouseCursorForTest()
             val start = SystemClock.uptimeMillis()
             view.dispatchTouchEvent(
                 MotionEvent.obtain(start, start, MotionEvent.ACTION_DOWN,
-                    500f, handleY, 0))
+                    handleX, handleY, 0))
             view.dispatchTouchEvent(
                 MotionEvent.obtain(start, start + 20, MotionEvent.ACTION_MOVE,
                     700f, handleY, 0))
@@ -208,16 +228,9 @@ class CorePortTest {
                 layout(0, 0, 1000, 800)
                 setMode(MeasureMode.CONTINUOUS)
             }
-            val start = SystemClock.uptimeMillis()
             val points = arrayOf(300f to 300f, 500f to 300f, 500f to 500f)
-            points.forEachIndexed { index, point ->
-                val down = start + index * 100L
-                view.dispatchTouchEvent(
-                    MotionEvent.obtain(down, down, MotionEvent.ACTION_DOWN,
-                        point.first, point.second, 0))
-                view.dispatchTouchEvent(
-                    MotionEvent.obtain(down, down + 20,
-                        MotionEvent.ACTION_UP, point.first, point.second, 0))
+            points.forEach { point ->
+                clickVirtualMouseAt(view, point.first, point.second)
             }
             assertEquals(3, view.pendingPointCount)
             assertEquals(0, view.measurements.size)
@@ -236,14 +249,8 @@ class CorePortTest {
             view = DrawingView(instrumentation.targetContext)
             view.layout(0, 0, 1000, 800)
             view.setMode(MeasureMode.LENGTH)
-            val start = SystemClock.uptimeMillis()
-            for ((index, point) in arrayOf(300f to 500f, 500f to 500f).withIndex()) {
-                val down = start + index * 100L
-                view.dispatchTouchEvent(MotionEvent.obtain(
-                    down, down, MotionEvent.ACTION_DOWN, point.first, point.second, 0))
-                view.dispatchTouchEvent(MotionEvent.obtain(
-                    down, down + 20, MotionEvent.ACTION_UP,
-                    point.first, point.second, 0))
+            for (point in arrayOf(300f to 500f, 500f to 500f)) {
+                clickVirtualMouseAt(view, point.first, point.second)
             }
         }
         val original = view.measurements.single()
@@ -275,6 +282,39 @@ class CorePortTest {
     }
 
     @Test
+    fun virtualMouseSelectsPointAndDimensionCanBeDeletedFromSelection() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        lateinit var view: DrawingView
+        instrumentation.runOnMainSync {
+            view = DrawingView(instrumentation.targetContext).apply {
+                layout(0, 0, 1000, 800)
+                setMode(MeasureMode.LENGTH)
+            }
+            val now = SystemClock.uptimeMillis()
+            // 测量态下直接点图纸不再落下选点，必须操作浮动鼠标。
+            view.dispatchTouchEvent(
+                MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN,
+                    420f, 420f, 0))
+            view.dispatchTouchEvent(
+                MotionEvent.obtain(now, now + 20, MotionEvent.ACTION_UP,
+                    420f, 420f, 0))
+            assertEquals(0, view.pendingPointCount)
+
+            clickVirtualMouseAt(view, 300f, 450f)
+            clickVirtualMouseAt(view, 600f, 450f)
+            assertEquals(1, view.measurements.size)
+            assertNotNull(view.hitMeasurementAtScreenForTest(450f, 450f))
+            assertNotNull(view.hitMeasurementAtScreenForTest(300f, 450f))
+            assertNotNull(view.hitMeasurementAtScreenForTest(450f, 370f))
+
+            view.beginMeasurementEdit(view.measurements.single())
+            assertTrue(view.isEditingObject)
+            assertTrue(view.deleteEditingObject())
+            assertTrue(view.measurements.isEmpty())
+        }
+    }
+
+    @Test
     fun angleMeasurementUsesTwoLineSegmentsAndLabelTap() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
@@ -293,20 +333,24 @@ class CorePortTest {
             view.layout(0, 0, 1000, 800)
             view.load(document)
             view.fitToView(true)
+            val fit = view.viewState()!!
+            view.restoreView(fit.first, fit.second, fit.third * 0.45)
             view.setMode(MeasureMode.ANGLE)
-            val start = SystemClock.uptimeMillis()
-            for ((index, point) in arrayOf(
-                500f to 896f,
-                980f to 536f,
-                700f to 436f,
-            ).withIndex()) {
-                val down = start + index * 100L
-                view.dispatchTouchEvent(MotionEvent.obtain(
-                    down, down, MotionEvent.ACTION_DOWN, point.first, point.second, 0))
-                view.dispatchTouchEvent(MotionEvent.obtain(
-                    down, down + 20, MotionEvent.ACTION_UP,
-                    point.first, point.second, 0))
-            }
+            val polyline = document!!.entities
+                .filterIsInstance<SkdwDocument.Entity.Polyline>().single()
+            val first = view.worldToScreenForTest(
+                (polyline.xs[0] + polyline.xs[1]) / 2.0,
+                (polyline.ys[0] + polyline.ys[1]) / 2.0,
+            )
+            val second = view.worldToScreenForTest(
+                (polyline.xs[1] + polyline.xs[2]) / 2.0,
+                (polyline.ys[1] + polyline.ys[2]) / 2.0,
+            )
+            clickVirtualMouseAt(view, first.first, first.second)
+            assertEquals(view.activeInteractionHint, 1, view.pendingPointCount)
+            clickVirtualMouseAt(view, second.first, second.second)
+            assertEquals(view.activeInteractionHint, 3, view.pendingPointCount)
+            clickVirtualMouseAt(view, 400f, 300f)
         }
         assertEquals(1, view.measurements.size)
         val measurement = view.measurements.single()

@@ -59,6 +59,8 @@ class DrawingActivity : AppCompatActivity() {
     private lateinit var spaceButton: Button
     private lateinit var actionBar: LinearLayout
     private lateinit var actionStatus: TextView
+    private lateinit var actionUndo: Button
+    private lateinit var actionDelete: Button
     private lateinit var toolDock: CadToolDockView
     private lateinit var toolRowScroll: android.widget.HorizontalScrollView
     private var toolRowView: CadToolRowView? = null
@@ -138,9 +140,14 @@ class DrawingActivity : AppCompatActivity() {
         }
         actionBar.addView(actionStatus, LinearLayout.LayoutParams(
             0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        actionBar.addView(compactButton("退一步", 12f) {
+        actionDelete = compactButton("删除", 12f) {
+            confirmDeleteEditingObject()
+        }.apply { visibility = View.GONE }
+        actionBar.addView(actionDelete)
+        actionUndo = compactButton("退一步", 12f) {
             drawingView.undoPendingPoint()
-        })
+        }
+        actionBar.addView(actionUndo)
         actionBar.addView(compactButton("完成", 12f) {
             drawingView.finishInteraction()
         })
@@ -270,6 +277,8 @@ class DrawingActivity : AppCompatActivity() {
                 if (currentMode == MeasureMode.NONE) {
                     actionBar.visibility = View.GONE
                 } else {
+                    actionUndo.visibility = View.VISIBLE
+                    actionDelete.visibility = View.GONE
                     activeTab = when (currentMode) {
                         MeasureMode.TEXT, MeasureMode.LINE, MeasureMode.SKETCH,
                         MeasureMode.CLOUD, MeasureMode.LEADER,
@@ -312,12 +321,17 @@ class DrawingActivity : AppCompatActivity() {
                     refreshDock()
                     infoPanel.visibility = View.GONE
                     actionBar.visibility = View.VISIBLE
-                    actionStatus.text = "编辑标注 · 拖动控制点，实时重算尺寸"
+                    actionUndo.visibility = View.GONE
+                    actionDelete.visibility = View.VISIBLE
+                    actionStatus.text = "编辑标注 · 拖动白色方框调整尺寸端点"
                 } else {
                     actionBar.visibility = View.GONE
+                    actionDelete.visibility = View.GONE
+                    actionUndo.visibility = View.VISIBLE
                     activeTab = 0
                     refreshDock()
                     drawingView.refreshInfoPanel()
+                    savePins()
                 }
             }
         }
@@ -524,25 +538,25 @@ class DrawingActivity : AppCompatActivity() {
     private fun showMeasurePanel() {
         showToolSheet(
             "测量",
-            "单指拖动准星选点，松开确认；双指平移/缩放；靠近已选点可拖动调整。",
+            "拖动浮动鼠标定位准星，轻点鼠标确认；双指平移/缩放；尺寸端点可直接拖动。",
             listOf(
                 "长度" to {
-                    activateTool("长度", "选择两个点", MeasureMode.LENGTH)
+                    activateTool("长度", "拖动鼠标定位，轻点选两个点", MeasureMode.LENGTH)
                 },
                 "连续" to {
-                    activateTool("连续", "连续选点，点“完成”结束", MeasureMode.CONTINUOUS)
+                    activateTool("连续", "轻点鼠标连续选点，点“完成”结束", MeasureMode.CONTINUOUS)
                 },
                 "面积" to {
-                    activateTool("面积", "沿边界选点，点“完成”闭合", MeasureMode.AREA)
+                    activateTool("面积", "拖动鼠标沿边界选点，点“完成”闭合", MeasureMode.AREA)
                 },
                 "角度" to {
-                    activateTool("角度", "依次点两条线段，再点文字落点", MeasureMode.ANGLE)
+                    activateTool("角度", "依次确认两条线段，再确认文字位置", MeasureMode.ANGLE)
                 },
                 "弧长" to {
-                    activateTool("弧长", "点击目标圆弧", MeasureMode.ARC)
+                    activateTool("弧长", "移动准星到目标圆弧，轻点鼠标确认", MeasureMode.ARC)
                 },
                 "半径" to {
-                    activateTool("半径", "点击目标圆或圆弧", MeasureMode.RADIUS)
+                    activateTool("半径", "移动准星到圆或圆弧，轻点鼠标确认", MeasureMode.RADIUS)
                 },
                 "比例校准" to { showScaleDialog() },
             ),
@@ -556,7 +570,7 @@ class DrawingActivity : AppCompatActivity() {
             "只保留文字标注；测量和文字标注统一在标注管理中维护。",
             listOf(
                 "文字标注" to {
-                    activateTool("文字标注", "拖动准星定位，松开后输入文字", MeasureMode.TEXT)
+                    activateTool("文字标注", "拖动鼠标放置准星，轻点后输入文字", MeasureMode.TEXT)
                 },
                 "标注管理" to { showPinListDialog() },
             ),
@@ -840,17 +854,11 @@ class DrawingActivity : AppCompatActivity() {
     }
 
     private fun showMeasurementActions(measurement: Measurement) {
-        val actions = arrayOf("修改端点", "删除标注")
-        AlertDialog.Builder(this)
-            .setTitle(measurement.label(drawingView.unitScale).replace("\n", "，"))
-            .setItems(actions) { _, which ->
-                when (which) {
-                    0 -> drawingView.beginMeasurementEdit(measurement)
-                    else -> confirmDeleteMeasurement(measurement)
-                }
-            }
-            .setNegativeButton("取消", null)
-            .show()
+        // 与 CAD 快速看图一致：点中尺寸后直接进入修改状态，
+        // 尺寸两端显示白色方框；动作条提供删除/完成/取消。
+        drawingView.beginMeasurementEdit(measurement)
+        actionStatus.text =
+            "已选中 · ${measurement.label(drawingView.unitScale).replace("\n", "，")}"
     }
 
     private fun showAnnotationActions(annotation: Annotation) {
@@ -862,41 +870,18 @@ class DrawingActivity : AppCompatActivity() {
             MeasureMode.LEADER -> "引线"
             else -> "标注"
         }
-        val editAction = if (annotation.kind == MeasureMode.TEXT) "修改位置" else "修改端点"
-        val actions = arrayOf(editAction, "删除标注")
-        AlertDialog.Builder(this)
-            .setTitle("$kind${annotation.text.takeIf { it.isNotBlank() }?.let { " · $it" } ?: ""}")
-            .setItems(actions) { _, which ->
-                when (which) {
-                    0 -> drawingView.beginAnnotationEdit(annotation)
-                    else -> confirmDeleteAnnotation(annotation)
-                }
-            }
-            .setNegativeButton("取消", null)
-            .show()
+        drawingView.beginAnnotationEdit(annotation)
+        val summary = annotation.text.takeIf { it.isNotBlank() }
+        actionStatus.text = "已选中 · $kind${summary?.let { " · $it" } ?: ""}"
     }
 
-    private fun confirmDeleteMeasurement(measurement: Measurement) {
-        AlertDialog.Builder(this)
-            .setTitle("删除测量")
-            .setMessage(measurement.label(drawingView.unitScale).replace("\n", "，") +
-                    "\n\n删除后不可恢复。")
-            .setPositiveButton("删除") { _, _ ->
-                drawingView.removeMeasurement(measurement)
-                captureCurrentMeasurements()
-                savePins()
-            }
-            .setNegativeButton("取消", null)
-            .show()
-    }
-
-    private fun confirmDeleteAnnotation(annotation: Annotation) {
+    private fun confirmDeleteEditingObject() {
+        val label = drawingView.editingObjectLabel().replace("\n", "，")
         AlertDialog.Builder(this)
             .setTitle("删除标注")
-            .setMessage("删除后不可恢复。")
+            .setMessage(label.ifBlank { "当前标注" } + "\n\n删除后不可恢复。")
             .setPositiveButton("删除") { _, _ ->
-                drawingView.removeAnnotation(annotation)
-                savePins()
+                drawingView.deleteEditingObject()
             }
             .setNegativeButton("取消", null)
             .show()
