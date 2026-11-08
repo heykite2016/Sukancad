@@ -2,12 +2,17 @@ package com.sukancad.cad
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.core.content.FileProvider
+import android.os.SystemClock
+import android.view.MotionEvent
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 
 @RunWith(AndroidJUnit4::class)
 class CorePortTest {
@@ -60,5 +65,316 @@ class CorePortTest {
         assertEquals(1, document!!.layers.size)
         assertEquals(1, document.entities.size)
         assertTrue(document.entities.single() is SkdwDocument.Entity.Polyline)
+    }
+
+    @Test
+    fun zipImportExtractsDrawingsAndRemovesArchiveFromLibrary() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        val testRoot = instrumentation.context
+        val shareDir = File(context.cacheDir, "share").apply { mkdirs() }
+        val base = "wechat-core-test-${System.currentTimeMillis()}"
+        val archive = File(shareDir, "$base.zip")
+        ZipOutputStream(archive.outputStream().buffered()).use { zip ->
+            zip.putNextEntry(ZipEntry("wechat-plan.dxf"))
+            testRoot.assets.open("core-lw.dxf").use { it.copyTo(zip) }
+            zip.closeEntry()
+        }
+
+        val uri = FileProvider.getUriForFile(
+            context, "com.sukancad.cad.files", archive)
+        val message = DrawingLibrary.importFromUri(context, uri)
+        assertTrue(message, message.contains("已解压"))
+
+        val library = DrawingLibrary.libraryDir(context)
+        assertTrue(
+            "ZIP archive must not remain in drawing library",
+            library.listFiles().orEmpty().none {
+                it.isFile && it.name.startsWith(base) &&
+                    it.extension.equals("zip", ignoreCase = true)
+            },
+        )
+        val importedFolder = File(library, base)
+        assertTrue(importedFolder.isDirectory)
+        assertTrue(DrawingLibrary.countDrawings(importedFolder) > 0)
+
+        importedFolder.deleteRecursively()
+        archive.delete()
+    }
+
+    @Test
+    fun cacheCleanupPreservesDrawings() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val root = File(context.cacheDir, "cache-cleanup-${System.currentTimeMillis()}")
+        root.mkdirs()
+        val drawing = File(root, "drawing.dxf").apply { writeText("test") }
+        File(root, "drawing.dxf.skdw").writeText("cache")
+        File(root, "drawing.dxf.skdw.layouts").writeText("cache")
+
+        assertEquals(2, DrawingLibrary.cacheInfo(context, root).files)
+        DrawingLibrary.clearParsedCaches(context, root)
+        assertTrue("drawing must survive cache cleanup", drawing.isFile)
+        assertEquals(0, DrawingLibrary.cacheInfo(context, root).files)
+        root.deleteRecursively()
+    }
+
+    @Test
+    fun recentRemovalKeepsDrawingFile() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val drawing = File(context.cacheDir, "recent-remove-${System.currentTimeMillis()}.dxf")
+        drawing.writeText("drawing")
+        DrawingLibrary.recordOpen(context, drawing.absolutePath)
+        assertTrue(DrawingLibrary.recent(context).any { it.file == drawing })
+
+        DrawingLibrary.removeRecent(context, drawing.absolutePath)
+        assertTrue("drawing file must survive recent-list removal", drawing.isFile)
+        assertTrue(DrawingLibrary.recent(context).none { it.file == drawing })
+        drawing.delete()
+    }
+
+    @Test
+    fun touchSelectionAndHandleAdjustmentKeepEditablePoint() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        lateinit var view: DrawingView
+        instrumentation.runOnMainSync {
+            view = DrawingView(instrumentation.targetContext).apply {
+                layout(0, 0, 1000, 800)
+                setMode(MeasureMode.LENGTH)
+            }
+            val start = SystemClock.uptimeMillis()
+            view.dispatchTouchEvent(
+                MotionEvent.obtain(start, start, MotionEvent.ACTION_DOWN,
+                    500f, 500f, 0))
+            view.dispatchTouchEvent(
+                MotionEvent.obtain(start, start + 20, MotionEvent.ACTION_UP,
+                    500f, 500f, 0))
+        }
+        assertEquals(1, view.pendingPointCount)
+        val original = view.pendingPointsSnapshot().single()
+
+        instrumentation.runOnMainSync {
+            val density = view.resources.displayMetrics.density
+            val handleY = 500f - 52f * density
+            val start = SystemClock.uptimeMillis()
+            view.dispatchTouchEvent(
+                MotionEvent.obtain(start, start, MotionEvent.ACTION_DOWN,
+                    500f, handleY, 0))
+            view.dispatchTouchEvent(
+                MotionEvent.obtain(start, start + 20, MotionEvent.ACTION_MOVE,
+                    700f, handleY, 0))
+            view.dispatchTouchEvent(
+                MotionEvent.obtain(start, start + 40, MotionEvent.ACTION_UP,
+                    700f, handleY, 0))
+        }
+        assertEquals(1, view.pendingPointCount)
+        val adjusted = view.pendingPointsSnapshot().single()
+        assertTrue(
+            "dragging an existing handle must update its coordinates",
+            adjusted.first != original.first,
+        )
+        assertEquals(
+            "grabbing or dragging a handle must not make it jump vertically",
+            original.second,
+            adjusted.second,
+            1e-9,
+        )
+    }
+
+    @Test
+    fun drawingManagementRenamesAndDeletesWithCache() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val root = File(context.cacheDir, "drawing-manage-${System.currentTimeMillis()}")
+        root.mkdirs()
+        val original = File(root, "alpha.dxf").apply { writeText("drawing") }
+        File(root, "alpha.dxf.skdw").writeText("cache")
+
+        assertTrue(DrawingLibrary.rename(context, DrawingLibrary.Item(original), "beta.dxf"))
+        val renamed = File(root, "beta.dxf")
+        assertTrue(renamed.isFile)
+        assertTrue(File(root, "beta.dxf.skdw").isFile)
+
+        DrawingLibrary.delete(context, DrawingLibrary.Item(renamed))
+        assertTrue(!renamed.exists())
+        assertTrue(!File(root, "beta.dxf.skdw").exists())
+        root.deleteRecursively()
+    }
+
+    @Test
+    fun continuousMeasurementCanFinishFromTouchActionBar() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        lateinit var view: DrawingView
+        instrumentation.runOnMainSync {
+            view = DrawingView(instrumentation.targetContext).apply {
+                layout(0, 0, 1000, 800)
+                setMode(MeasureMode.CONTINUOUS)
+            }
+            val start = SystemClock.uptimeMillis()
+            val points = arrayOf(300f to 300f, 500f to 300f, 500f to 500f)
+            points.forEachIndexed { index, point ->
+                val down = start + index * 100L
+                view.dispatchTouchEvent(
+                    MotionEvent.obtain(down, down, MotionEvent.ACTION_DOWN,
+                        point.first, point.second, 0))
+                view.dispatchTouchEvent(
+                    MotionEvent.obtain(down, down + 20,
+                        MotionEvent.ACTION_UP, point.first, point.second, 0))
+            }
+            assertEquals(3, view.pendingPointCount)
+            assertEquals(0, view.measurements.size)
+            view.finishInteraction()
+        }
+        assertEquals(0, view.pendingPointCount)
+        assertEquals(1, view.measurements.size)
+        assertEquals(MeasureMode.CONTINUOUS, view.measurements.single().kind)
+    }
+
+    @Test
+    fun existingMeasurementEndpointCanBeEditedAndCancelled() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        lateinit var view: DrawingView
+        instrumentation.runOnMainSync {
+            view = DrawingView(instrumentation.targetContext)
+            view.layout(0, 0, 1000, 800)
+            view.setMode(MeasureMode.LENGTH)
+            val start = SystemClock.uptimeMillis()
+            for ((index, point) in arrayOf(300f to 500f, 500f to 500f).withIndex()) {
+                val down = start + index * 100L
+                view.dispatchTouchEvent(MotionEvent.obtain(
+                    down, down, MotionEvent.ACTION_DOWN, point.first, point.second, 0))
+                view.dispatchTouchEvent(MotionEvent.obtain(
+                    down, down + 20, MotionEvent.ACTION_UP,
+                    point.first, point.second, 0))
+            }
+        }
+        val original = view.measurements.single()
+        assertEquals(200.0, original.total, 1e-9)
+
+        instrumentation.runOnMainSync {
+            view.beginMeasurementEdit(original)
+            val first = original.points.first()
+            val sx = (view.width / 2.0 + first.first).toFloat()
+            val sy = (view.height / 2.0 - first.second).toFloat()
+            val start = SystemClock.uptimeMillis()
+            view.dispatchTouchEvent(
+                MotionEvent.obtain(start, start, MotionEvent.ACTION_DOWN, sx, sy, 0))
+            view.dispatchTouchEvent(
+                MotionEvent.obtain(start, start + 20, MotionEvent.ACTION_MOVE,
+                    sx + 100f, sy, 0))
+            view.dispatchTouchEvent(
+                MotionEvent.obtain(start, start + 40, MotionEvent.ACTION_UP,
+                    sx + 100f, sy, 0))
+        }
+        assertEquals(100.0, view.measurements.single().total, 1e-9)
+        assertTrue(view.isEditingObject)
+
+        instrumentation.runOnMainSync {
+            view.finishObjectEdit()
+        }
+        assertTrue(!view.isEditingObject)
+        assertEquals(100.0, view.measurements.single().total, 1e-9)
+    }
+
+    @Test
+    fun angleMeasurementUsesTwoLineSegmentsAndLabelTap() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        val source = File(context.cacheDir, "angle-two-lines.dxf")
+        val cache = File(context.cacheDir, "angle-two-lines.skdw")
+        instrumentation.context.assets.open("core-lw.dxf").use { input ->
+            source.outputStream().use(input::copyTo)
+        }
+        assertTrue(DwgCore.parse(source, cache))
+        val document = SkdwDocument.read(cache)
+        assertNotNull(document)
+
+        lateinit var view: DrawingView
+        instrumentation.runOnMainSync {
+            view = DrawingView(context)
+            view.layout(0, 0, 1000, 800)
+            view.load(document)
+            view.fitToView(true)
+            view.setMode(MeasureMode.ANGLE)
+            val start = SystemClock.uptimeMillis()
+            for ((index, point) in arrayOf(
+                500f to 896f,
+                980f to 536f,
+                700f to 436f,
+            ).withIndex()) {
+                val down = start + index * 100L
+                view.dispatchTouchEvent(MotionEvent.obtain(
+                    down, down, MotionEvent.ACTION_DOWN, point.first, point.second, 0))
+                view.dispatchTouchEvent(MotionEvent.obtain(
+                    down, down + 20, MotionEvent.ACTION_UP,
+                    point.first, point.second, 0))
+            }
+        }
+        assertEquals(1, view.measurements.size)
+        val measurement = view.measurements.single()
+        assertEquals(MeasureMode.ANGLE, measurement.kind)
+        assertEquals(4, measurement.points.size)
+    }
+
+    @Test
+    fun autoCalibrationInfersScaleFromDimensionTextAndSegments() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        val source = File(context.cacheDir, "auto-calibration.dxf")
+        val cache = File(context.cacheDir, "auto-calibration.skdw")
+        val base = instrumentation.context.assets.open("core-lw.dxf")
+            .bufferedReader().use { it.readText() }
+            .replace(
+                "  9\n\$HANDSEED\n  5\n40",
+                "  9\n\$HANDSEED\n  5\nFF",
+            )
+        val marker = "  0\nENDSEC\n  0\nSECTION\n  2\nOBJECTS"
+        assertTrue(base.contains(marker))
+        fun textEntity(handle: Int, x: Double, y: Double, value: String): String =
+            """
+            0
+            TEXT
+            5
+            $handle
+            330
+            1
+            100
+            AcDbEntity
+            8
+            0
+            100
+            AcDbText
+            10
+            $x
+            20
+            $y
+            30
+            0.0
+            40
+            0.2
+            1
+            $value
+            """.trimIndent() + "\n"
+        val texts = textEntity(50, 2.0, 0.2, "4") +
+                textEntity(51, 3.8, 1.5, "3") +
+                textEntity(52, 2.0, 2.8, "4") +
+                textEntity(53, 0.2, 1.5, "3") +
+                textEntity(54, 1.0, 0.2, "4") +
+                textEntity(55, 3.8, 1.0, "3")
+        source.writeText(base.replace(marker, texts + marker))
+        assertTrue(DwgCore.parse(source, cache))
+        val document = SkdwDocument.read(cache)
+        assertNotNull(document)
+        val parsedTexts = document!!.entities.filterIsInstance<SkdwDocument.Entity.Text>()
+        assertEquals(6, parsedTexts.size)
+
+        lateinit var view: DrawingView
+        instrumentation.runOnMainSync {
+            view = DrawingView(context)
+            view.layout(0, 0, 1000, 800)
+            view.load(document)
+        }
+        val result = view.inferAutoCalibration()
+        assertNotNull(result)
+        assertEquals(1.0, result!!.scale, 0.02)
+        assertTrue(result.samples >= 3)
     }
 }

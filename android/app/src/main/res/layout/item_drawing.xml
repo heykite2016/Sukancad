@@ -1,28 +1,42 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<com.sukancad.cad.SwipeRevealLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="wrap_content"
-    android:orientation="vertical"
-    android:background="#ffffff"
-    android:paddingHorizontal="18dp"
-    android:paddingVertical="14dp">
+    android:layout_height="wrap_content">
 
-    <TextView
-        android:id="@+id/itemName"
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:textColor="#1e2227"
-        android:textSize="15sp"
-        android:maxLines="1"
-        android:ellipsize="middle"
-        android:drawablePadding="10dp"
-        android:gravity="center_vertical" />
+        android:background="#ffffff"
+        android:orientation="vertical"
+        android:paddingHorizontal="18dp"
+        android:paddingVertical="14dp">
+
+        <TextView
+            android:id="@+id/itemName"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:drawablePadding="10dp"
+            android:ellipsize="middle"
+            android:gravity="center_vertical"
+            android:maxLines="1"
+            android:textColor="#1e2227"
+            android:textSize="15sp" />
+
+        <TextView
+            android:id="@+id/itemMeta"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="3dp"
+            android:textColor="#9aa3ae"
+            android:textSize="12sp" />
+    </LinearLayout>
 
     <TextView
-        android:id="@+id/itemMeta"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:textColor="#9aa3ae"
-        android:textSize="12sp"
-        android:layout_marginTop="3dp" />
-</LinearLayout>
+        android:id="@+id/itemSwipeAction"
+        android:layout_width="86dp"
+        android:layout_height="match_parent"
+        android:gravity="center"
+        android:textColor="#ffffff"
+        android:textSize="14sp"
+        android:textStyle="bold" />
+</com.sukancad.cad.SwipeRevealLayout>

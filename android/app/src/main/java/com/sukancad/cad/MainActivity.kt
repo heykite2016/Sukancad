@@ -3,6 +3,7 @@ package com.sukancad.cad
 import android.app.Activity
 import android.content.Intent
 import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
@@ -29,6 +30,7 @@ class MainActivity : AppCompatActivity() {
     /** 0=本地图纸 1=最近打开 */
     private var tab = 0
     private val tabViews = ArrayList<TextView>()
+    private var openedSwipeRow: SwipeRevealLayout? = null
 
     /** 文件夹导航栈，根目录时为空 */
     private val pathStack = ArrayDeque<java.io.File>()
@@ -38,44 +40,66 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // 顶栏：返回按钮 + 当前位置标题
+        fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
+
+        // 顶栏：返回 + 标题 + 导入 + 缓存/更多
         btnBack = TextView(this).apply {
-            text = "‹ 返回"
-            textSize = 15f
-            setTextColor(Color.WHITE)
-            setPadding(36, 0, 36, 0)
+            text = "‹"
+            textSize = 24f
+            setTextColor(0xFF17242C.toInt())
+            setPadding(dp(8), dp(4), dp(8), dp(4))
             gravity = Gravity.CENTER_VERTICAL
             setOnClickListener { navigateUp() }
             visibility = View.GONE
         }
         titleView = TextView(this).apply {
             text = "图纸库"
-            textSize = 17f
-            setTextColor(Color.WHITE)
+            textSize = 20f
+            setTextColor(0xFF17242C.toInt())
             gravity = Gravity.CENTER_VERTICAL
         }
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(0xFF1F6FD6.toInt())
+            setBackgroundColor(0xFFF7F9FA.toInt())
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 30, 0, 30)
+            setPadding(dp(10), dp(20), dp(10), dp(12))
             addView(btnBack, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT))
             addView(titleView, LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT))
+                0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+            addView(TextView(this@MainActivity).apply {
+                text = "导入"
+                textSize = 14f
+                gravity = Gravity.CENTER
+                setTextColor(0xFF0C728E.toInt())
+                setPadding(dp(10), dp(7), dp(10), dp(7))
+                background = GradientDrawable().apply {
+                    setColor(0xFFE5F3F7.toInt())
+                    cornerRadius = dp(10).toFloat()
+                }
+                setOnClickListener { chooseFiles() }
+            })
+            addView(TextView(this@MainActivity).apply {
+                text = "⋮"
+                textSize = 24f
+                gravity = Gravity.CENTER
+                setTextColor(0xFF40515B.toInt())
+                setPadding(dp(12), 0, dp(6), 0)
+                setOnClickListener { showLibraryMenu() }
+            })
         }
 
         // 页签：最近打开 / 本地图纸（对标竞品首页结构）
         val tabBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(Color.WHITE)
+            setBackgroundColor(0xFFF7F9FA.toInt())
         }
         for ((label, t) in listOf("本地图纸" to 0, "最近打开" to 1)) {
             val tv = TextView(this).apply {
                 text = label
                 textSize = 15f
                 gravity = Gravity.CENTER
-                setPadding(0, 26, 0, 26)
+                setPadding(0, dp(13), 0, dp(13))
                 setOnClickListener { switchTab(t) }
             }
             tabViews.add(tv)
@@ -85,12 +109,16 @@ class MainActivity : AppCompatActivity() {
 
         // 搜索框：递归搜索当前目录子树内的图纸
         searchInput = android.widget.EditText(this).apply {
-            hint = "搜索图纸名称（含子文件夹）"
+            hint = "搜索 DWG / DXF"
             textSize = 14f
             setTextColor(0xFF333B44.toInt())
             setHintTextColor(0xFF9AA3AE.toInt())
-            setBackgroundColor(Color.WHITE)
-            setPadding(36, 26, 36, 26)
+            background = GradientDrawable().apply {
+                setColor(0xFFFFFFFF.toInt())
+                cornerRadius = dp(12).toFloat()
+                setStroke(dp(1), 0xFFD9E1E6.toInt())
+            }
+            setPadding(dp(14), dp(10), dp(14), dp(10))
             addTextChangedListener(object : android.text.TextWatcher {
                 override fun afterTextChanged(s: android.text.Editable?) {
                     query = s?.toString()?.trim() ?: ""
@@ -106,7 +134,7 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(0xFFF3F4F6.toInt())
         }
         emptyView = TextView(this).apply {
-            text = "图纸库还是空的\n\n在微信里点开图纸 → 右上角「…」→「用其他应用打开」→ 选择 速看CAD\n支持 dwg / dxf / zip / rar"
+            text = "暂无图纸\n\n从微信选择“用其他应用打开”即可导入；ZIP 会自动解压到图纸目录，并删除压缩包。"
             setTextColor(0xFF9AA3AE.toInt())
             textSize = 14f
             gravity = Gravity.CENTER
@@ -116,12 +144,15 @@ class MainActivity : AppCompatActivity() {
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            setBackgroundColor(0xFFF7F9FA.toInt())
             addView(header, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(tabBar, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(searchInput, LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    setMargins(dp(12), dp(4), dp(12), dp(8))
+                })
             addView(listView, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
             addView(emptyView, LinearLayout.LayoutParams(
@@ -130,36 +161,31 @@ class MainActivity : AppCompatActivity() {
         setContentView(root)
         switchTab(0)
 
-        listView.setOnItemClickListener { _, _, position, _ ->
-            val item = items.getOrNull(position) ?: return@setOnItemClickListener
-            when {
-                item.isFolder -> {
-                    pathStack.addLast(item.file)
-                    refresh()
-                }
-                item.file.extension.lowercase() in setOf("zip", "rar") -> {
-                    // 失败保留的压缩包：点一下重试解压
-                    Toast.makeText(this, "解压中…", Toast.LENGTH_SHORT).show()
-                    thread {
-                        val message = DrawingLibrary.extractLocal(this, item.file)
-                        runOnUiThread {
-                            Toast.makeText(this, message, Toast.LENGTH_LONG).show()
-                            refresh()
-                        }
-                    }
-                }
-                else -> startActivity(Intent(this, DrawingActivity::class.java)
-                    .putExtra("path", item.file.absolutePath))
-            }
-        }
-        listView.setOnItemLongClickListener { _, _, position, _ ->
-            val item = items.getOrNull(position) ?: return@setOnItemLongClickListener true
-            showItemMenu(item)
-            true
-        }
-
         handleIntent(intent)
         refresh()
+    }
+
+    private fun openItem(item: DrawingLibrary.Item) {
+        when {
+            item.isFolder -> {
+                pathStack.addLast(item.file)
+                refresh()
+            }
+            item.file.extension.lowercase() in setOf("zip", "rar") -> {
+                Toast.makeText(this, "解压中…", Toast.LENGTH_SHORT).show()
+                thread {
+                    val message = DrawingLibrary.extractLocal(this, item.file)
+                    runOnUiThread {
+                        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                        refresh()
+                    }
+                }
+            }
+            else -> startActivity(
+                Intent(this, DrawingActivity::class.java)
+                    .putExtra("path", item.file.absolutePath),
+            )
+        }
     }
 
     /** 长按弹出菜单：重命名 / 删除 */
@@ -233,6 +259,80 @@ class MainActivity : AppCompatActivity() {
         refresh()
     }
 
+    private fun chooseFiles() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+        }
+        startActivityForResult(intent, 1101)
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != 1101 || resultCode != Activity.RESULT_OK || data == null) return
+        val uris = ArrayList<android.net.Uri>()
+        data.clipData?.let { clip ->
+            for (i in 0 until clip.itemCount) uris.add(clip.getItemAt(i).uri)
+        }
+        data.data?.let { if (it !in uris) uris.add(it) }
+        if (uris.isEmpty()) return
+        Toast.makeText(this, "正在导入 ${uris.size} 个文件…", Toast.LENGTH_SHORT).show()
+        thread {
+            val messages = uris.map { uri -> DrawingLibrary.importFromUri(this, uri) }
+            runOnUiThread {
+                Toast.makeText(this, messages.joinToString("\n"), Toast.LENGTH_LONG).show()
+                refresh()
+            }
+        }
+    }
+
+    private fun showLibraryMenu() {
+        val cache = DrawingLibrary.cacheInfo(this)
+        val options = arrayOf(
+            "导入 DWG / DXF / ZIP",
+            "缓存管理（${cache.files} 个，${formatSize(cache.bytes)}）",
+            "清空最近打开",
+        )
+        AlertDialog.Builder(this)
+            .setTitle("图纸管理")
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> chooseFiles()
+                    1 -> showCacheManager()
+                    2 -> {
+                        DrawingLibrary.clearRecent(this)
+                        if (tab == 1) refresh()
+                        Toast.makeText(this, "最近打开已清空", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+            .show()
+    }
+
+    private fun showCacheManager() {
+        val cache = DrawingLibrary.cacheInfo(this)
+        AlertDialog.Builder(this)
+            .setTitle("缓存管理")
+            .setMessage(
+                "解析缓存：${cache.files} 个文件\n" +
+                    "占用空间：${formatSize(cache.bytes)}\n\n" +
+                    "清理缓存不会删除图纸、测量或标注。"
+            )
+            .setPositiveButton("清理解析缓存") { _, _ ->
+                val removed = DrawingLibrary.clearParsedCaches(this)
+                refresh()
+                Toast.makeText(
+                    this,
+                    "已清理 ${removed.files} 个缓存，释放 ${formatSize(removed.bytes)}",
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
+            .setNeutralButton("取消", null)
+            .show()
+    }
+
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
         if (pathStack.isNotEmpty()) {
@@ -296,13 +396,14 @@ class MainActivity : AppCompatActivity() {
             else -> dir.name
         }
         emptyView.text = if (query.isEmpty())
-            "图纸库还是空的\n\n在微信里点开图纸 → 右上角「…」→「用其他应用打开」→ 选择 速看CAD\n支持 dwg / dxf / zip / rar"
+            "暂无图纸\n\n从微信选择“用其他应用打开”即可导入；ZIP 会自动解压到图纸目录，并删除压缩包。"
         else "没有匹配「$query」的图纸"
         emptyView.visibility = if (items.isEmpty()) View.VISIBLE else View.GONE
         bindList()
     }
 
     private fun bindList() {
+        openedSwipeRow = null
         listView.adapter = object : android.widget.BaseAdapter() {
             override fun getCount() = items.size
             override fun getItem(position: Int) = items[position]
@@ -322,6 +423,36 @@ class MainActivity : AppCompatActivity() {
                         "压缩包（点击重试解压） · ${formatSize(item.sizeBytes)} · ${formatTime(item.lastModified)}"
                     else -> "${formatSize(item.sizeBytes)} · ${formatTime(item.lastModified)}" +
                         if (item.hasCache) " · 已缓存" else ""
+                }
+                val reveal = view as SwipeRevealLayout
+                val recent = tab == 1
+                reveal.bind(
+                    if (recent) "移除" else "删除",
+                    if (recent) 0xFF667985.toInt() else 0xFFD9534F.toInt(),
+                    {
+                        if (recent) {
+                            DrawingLibrary.removeRecent(
+                                this@MainActivity, item.file.absolutePath)
+                            Toast.makeText(
+                                this@MainActivity,
+                                "已从最近列表移除，图纸文件未删除",
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                            refresh()
+                        } else {
+                            confirmDelete(item)
+                        }
+                    },
+                    { openItem(item) },
+                    { showItemMenu(item) },
+                )
+                reveal.onOpenChanged = { row, open ->
+                    if (open) {
+                        if (openedSwipeRow !== row) openedSwipeRow?.close(notify = false)
+                        openedSwipeRow = row
+                    } else if (openedSwipeRow === row) {
+                        openedSwipeRow = null
+                    }
                 }
                 return view
             }

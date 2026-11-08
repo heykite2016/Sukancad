@@ -15,6 +15,9 @@
 - Windows 发布自包含 x64 portable ZIP，macOS 发布 Universal DMG 与 PKG。
 - 新增 Android arm64 核心移植：DWG/DXF 原生解析、SKDW 缓存、布局、图层、
   外部参照、测量和标注；PDF 尚未移植。
+- Android 改为 Canvas 自绘底栏与单排横向工具条，测量采用避手指准星、放大镜和可拖动控制点。
+- Android 测量、角度流程和比例校准对齐桌面习惯；新增自动比例识别，同时保留 PC 式两点手动校准。
+- Android 标注收口为文字标注和标注管理；本机图纸左滑删除，最近记录左滑只移除列表项。
 
 ### 优化
 
@@ -36,5 +39,5 @@
 - macOS App 与 PDFium 均为 `x86_64 + arm64`，最低支持 macOS 12。
 - Windows 为 x64，PE Subsystem `6.0`，核心 DWG/DXF 库静态链接。
 - 全量自动测试 `3/3` 通过。
-- Android 设备测试 `2/2` 通过，覆盖共享几何和 DXF 原生管线。
+- Android 设备测试 `11/11` 通过，覆盖共享几何、DXF 管线、触摸选点、端点编辑、角度、自动校准、导入和文件管理。
 - macOS 使用 ad-hoc hardened runtime；PKG 未做 Developer ID 签名和 Apple 公证。

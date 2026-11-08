@@ -116,6 +116,7 @@ private:
     void exportSvgAs();
     void requestTextAnnotation(const QPointF &position);
     void requestCalibration(double rawLength);
+    void autoCalibrateDrawing();
     void showAnnotationSettings();
     void showAnnotationSettingsLegacy();
     void showFileAssociationSettings();

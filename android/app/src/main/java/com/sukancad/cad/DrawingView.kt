@@ -1,6 +1,7 @@
 package com.sukancad.cad
 
 import android.content.Context
+import android.os.Build
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -27,7 +28,7 @@ private const val T_TEXT = 5
 // 标注绘制模式：文字/直线/任意线/云线/引线；编号与照片沿用 NotePin
 enum class MeasureMode {
     NONE, LENGTH, CONTINUOUS, AREA, ANGLE, ARC, RADIUS, COORD,
-    TEXT, LINE, SKETCH, CLOUD, LEADER, PIN, PHOTO
+    CALIBRATE, TEXT, LINE, SKETCH, CLOUD, LEADER, PIN, PHOTO
 }
 
 /** 图上编号/照片标注（持久化到图纸备注文件） */
@@ -65,7 +66,7 @@ data class Measurement(
             else "∠ ${"%.1f".format(angleAt(points[0], points[1], points[2]))}°"
         }
         MeasureMode.NONE, MeasureMode.PIN, MeasureMode.PHOTO,
-        MeasureMode.TEXT, MeasureMode.LINE, MeasureMode.SKETCH,
+        MeasureMode.CALIBRATE, MeasureMode.TEXT, MeasureMode.LINE, MeasureMode.SKETCH,
         MeasureMode.CLOUD, MeasureMode.LEADER -> ""
     }
 
@@ -81,6 +82,8 @@ data class Measurement(
         }
     }
 }
+
+data class AutoCalibrationResult(val scale: Double, val samples: Int)
 
 /**
  * CAD 图纸自绘视图：黑底渲染 + 单指平移/双指缩放 + 测量标注。
@@ -163,10 +166,18 @@ class DrawingView(context: Context) : android.view.View(context) {
     private val pending = ArrayList<Pair<Double, Double>>()
     /** 布局模式：每个待定点对应的模型空间坐标（视口外为 null），与 pending 一一对应 */
     private val pendingModel = ArrayList<Pair<Double, Double>?>()
+    var onInteractionStateChanged: ((MeasureMode, Int) -> Unit)? = null
+    val pendingPointCount: Int get() = pending.size
+    val activeInteractionHint: String get() = tapHint ?: ""
+    internal fun pendingPointsSnapshot(): List<Pair<Double, Double>> =
+        pending.toList()
     /** 一次性提示（如"未点到圆弧"），下一次点击时清除 */
     private var tapHint: String? = null
     val measurements = ArrayList<Measurement>()
     var onMeasurementChanged: ((String) -> Unit)? = null
+    var onCalibrationRequested: ((Double) -> Unit)? = null
+    /** 浏览模式点到测量标注时回调，用于确认删除。 */
+    var onMeasurementTapped: ((Measurement) -> Unit)? = null
 
     // 图元拾取（选择模式点图元看属性）
     var onEntityPicked: ((String?) -> Unit)? = null
@@ -185,6 +196,14 @@ class DrawingView(context: Context) : android.view.View(context) {
     // 用户绘制标注（文字/直线/任意线/云线/引线）
     val annotations = ArrayList<Annotation>()
     private var nextAnnoId = 1
+    /** 已有标注端点编辑；测量与用户绘制标注互斥。 */
+    private var editingMeasurement: Measurement? = null
+    private var originalMeasurement: Measurement? = null
+    private var editingAnnotation: Annotation? = null
+    private var originalAnnotationPoints: List<Pair<Double, Double>>? = null
+    private val editingPoints = ArrayList<Pair<Double, Double>>()
+    var onObjectEditStateChanged: ((Boolean) -> Unit)? = null
+    var onAnnotationTapped: ((Annotation) -> Unit)? = null
     /** 文字/引线需要输入内容时回调（第二参数为位置，返回后调 addAnnotation） */
     var onTextInput: ((MeasureMode, Pair<Double, Double>) -> Unit)? = null
     /** 手绘/多点绘制进行中的点（屏幕坐标世界值） */
@@ -223,6 +242,71 @@ class DrawingView(context: Context) : android.view.View(context) {
     fun clearAnnotations() { annotations.clear(); invalidate() }
 
     fun setNextAnnoId(v: Int) { nextAnnoId = v }
+
+    val isEditingObject: Boolean
+        get() = editingMeasurement != null || editingAnnotation != null
+
+    fun beginMeasurementEdit(measurement: Measurement) {
+        cancelObjectEdit()
+        originalMeasurement = measurement
+        editingMeasurement = measurement
+        editingAnnotation = null
+        originalAnnotationPoints = null
+        editingPoints.clear()
+        editingPoints.addAll(measurement.points)
+        onObjectEditStateChanged?.invoke(true)
+        invalidate()
+    }
+
+    fun beginAnnotationEdit(annotation: Annotation) {
+        cancelObjectEdit()
+        editingMeasurement = null
+        originalMeasurement = null
+        editingAnnotation = annotation
+        originalAnnotationPoints = ArrayList(annotation.points)
+        editingPoints.clear()
+        editingPoints.addAll(annotation.points)
+        onObjectEditStateChanged?.invoke(true)
+        invalidate()
+    }
+
+    fun finishObjectEdit() {
+        if (!isEditingObject) return
+        editingMeasurement = null
+        originalMeasurement = null
+        editingAnnotation = null
+        originalAnnotationPoints = null
+        editingPoints.clear()
+        onObjectEditStateChanged?.invoke(false)
+        updateResultPanel()
+        invalidate()
+    }
+
+    fun cancelObjectEdit() {
+        val measurementOriginal = originalMeasurement
+        val annotation = editingAnnotation
+        val annotationOriginal = originalAnnotationPoints
+        if (measurementOriginal != null) {
+            val current = editingMeasurement
+            val index = if (current != null) {
+                measurements.indexOfFirst { it === current }
+            } else -1
+            if (index >= 0) measurements[index] = measurementOriginal
+        }
+        if (annotation != null && annotationOriginal != null) {
+            annotation.points.clear()
+            annotation.points.addAll(annotationOriginal)
+        }
+        val wasEditing = isEditingObject
+        editingMeasurement = null
+        originalMeasurement = null
+        editingAnnotation = null
+        originalAnnotationPoints = null
+        editingPoints.clear()
+        if (wasEditing) onObjectEditStateChanged?.invoke(false)
+        updateResultPanel()
+        invalidate()
+    }
 
     fun centerOnPin(pin: NotePin) { centerOn(pin.x, pin.y) }
 
@@ -264,7 +348,7 @@ class DrawingView(context: Context) : android.view.View(context) {
     }
     private val measurePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = 2f
+        strokeWidth = 2f * resources.displayMetrics.density
         color = 0xFF31D2A0.toInt()
     }
     private val measureTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -304,6 +388,25 @@ class DrawingView(context: Context) : android.view.View(context) {
     private lateinit var scaleDetector: ScaleGestureDetector
     private lateinit var gestureDetector: GestureDetector
     private var snapPoint: Pair<Double, Double>? = null
+    private val selectionLiftPx = 52f * resources.displayMetrics.density
+    private var pointSelecting = false
+    private var editingPendingIndex = -1
+    private var editingHandleOffset = Pair(0f, 0f)
+    private var selectionScreen = Pair(0f, 0f)
+    private var selectionWorld: Pair<Double, Double>? = null
+    private var angleFirstSegment: SegmentHit? = null
+    private val pointMagnifier: android.widget.Magnifier? by lazy {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val density = resources.displayMetrics.density
+            android.widget.Magnifier.Builder(this)
+                .setSize((150 * density).toInt(), (105 * density).toInt())
+                .setCornerRadius(16f * density)
+                .setInitialZoom(2.0f)
+                .build()
+        } else {
+            null
+        }
+    }
 
     init {
         scaleDetector = ScaleGestureDetector(context,
@@ -371,9 +474,243 @@ class DrawingView(context: Context) : android.view.View(context) {
         pendingModel.clear()
         sketchPts.clear()
         tapHint = null
+        angleFirstSegment = null
         picked = null
         updateResultPanel()
+        notifyInteractionState()
         invalidate()
+    }
+
+    fun finishInteraction() {
+        if (isEditingObject) {
+            finishObjectEdit()
+            return
+        }
+        when (mode) {
+            MeasureMode.CONTINUOUS -> {
+                if (pending.size >= 2) commit(MeasureMode.CONTINUOUS)
+            }
+            MeasureMode.AREA -> {
+                if (pending.size >= 3) commit(MeasureMode.AREA)
+            }
+            MeasureMode.CLOUD -> {
+                if (pending.size >= 2) {
+                    annotations.add(Annotation(
+                        nextAnnoId++, MeasureMode.CLOUD, ArrayList(pending)))
+                    pending.clear()
+                    pendingModel.clear()
+                    updateResultPanel()
+                    notifyInteractionState()
+                    invalidate()
+                }
+            }
+            MeasureMode.SKETCH -> {
+                if (sketchPts.size >= 2) {
+                    annotations.add(Annotation(
+                        nextAnnoId++, MeasureMode.SKETCH, ArrayList(sketchPts)))
+                    sketchPts.clear()
+                    updateResultPanel()
+                    invalidate()
+                }
+            }
+            else -> Unit
+        }
+    }
+
+    fun undoPendingPoint() {
+        if (isEditingObject) {
+            cancelObjectEdit()
+            return
+        }
+        if (pending.isNotEmpty()) {
+            pending.removeAt(pending.lastIndex)
+            if (mode == MeasureMode.ANGLE && pending.isEmpty()) {
+                angleFirstSegment = null
+            }
+        } else if (sketchPts.isNotEmpty()) {
+            sketchPts.clear()
+        } else if (measurements.isNotEmpty()) {
+            measurements.removeAt(measurements.lastIndex)
+        }
+        if (pendingModel.isNotEmpty()) {
+            pendingModel.removeAt(pendingModel.lastIndex)
+        }
+        tapHint = null
+        updateResultPanel()
+        notifyInteractionState()
+        invalidate()
+    }
+
+    fun cancelInteraction() {
+        if (isEditingObject) {
+            cancelObjectEdit()
+            return
+        }
+        setMode(MeasureMode.NONE)
+    }
+
+    private fun pendingHandleIndexAt(sx: Float, sy: Float): Int {
+        val radius = 34f * resources.displayMetrics.density
+        var best = -1
+        var bestDistance = radius * radius
+        val points = if (isEditingObject) editingPoints else pending
+        for (i in points.indices) {
+            val x = worldToScreenX(points[i].first).toFloat()
+            val y = worldToScreenY(points[i].second).toFloat()
+            val dx = sx - x
+            val dy = sy - y
+            val distance = dx * dx + dy * dy
+            if (distance <= bestDistance) {
+                bestDistance = distance
+                best = i
+            }
+        }
+        return best
+    }
+
+    private fun updatePointSelection(fingerX: Float, fingerY: Float) {
+        val x = fingerX + editingHandleOffset.first
+        val y = (fingerY + editingHandleOffset.second).coerceAtLeast(8f)
+        val world = screenToWorld(x, y)
+        val snapped = findSnap(world) ?: world
+        selectionScreen = Pair(x, y)
+        selectionWorld = snapped
+        pointMagnifier?.show(x, y)
+        invalidate()
+    }
+
+    private fun commitPointSelection() {
+        val world = selectionWorld ?: return
+        if (isEditingObject && editingPendingIndex in editingPoints.indices) {
+            val snapped = findSnap(world) ?: world
+            editingPoints[editingPendingIndex] = snapped
+            applyObjectEditPoints()
+            pickHintForEditedPoint()
+        } else if (editingPendingIndex in pending.indices) {
+            val snapped = findSnap(world) ?: world
+            pending[editingPendingIndex] = snapped
+            if (pendingModel.size > editingPendingIndex) {
+                pendingModel[editingPendingIndex] =
+                    if (overlayDoc != null) paperPointToModel(snapped.first, snapped.second)
+                    else null
+            }
+            notifyInteractionState()
+            pickHintForEditedPoint()
+        } else if (!isEditingObject) {
+            onTap(world)
+        }
+    }
+
+    private fun pickHintForEditedPoint() {
+        tapHint = null
+        updateResultPanel()
+        invalidate()
+    }
+
+    private fun applyObjectEditPoints() {
+        val measurement = editingMeasurement
+        if (measurement != null) {
+            val index = measurements.indexOfFirst { it === measurement }
+            if (index >= 0) {
+                val rebuilt = rebuildMeasurement(measurement, editingPoints)
+                measurements[index] = rebuilt
+                editingMeasurement = rebuilt
+            }
+        }
+        val annotation = editingAnnotation
+        if (annotation != null) {
+            annotation.points.clear()
+            annotation.points.addAll(editingPoints)
+        }
+        updateResultPanel()
+        invalidate()
+    }
+
+    private fun rebuildMeasurement(
+        source: Measurement,
+        points: List<Pair<Double, Double>>,
+    ): Measurement {
+        if (points.isEmpty()) return source
+        val modelPoints = points.map { point ->
+            if (overlayDoc != null) paperPointToModel(point.first, point.second) else null
+        }
+        fun distance(i: Int, j: Int): Double {
+            val modelA = modelPoints.getOrNull(i)
+            val modelB = modelPoints.getOrNull(j)
+            return if (modelA != null && modelB != null) {
+                hypot(modelB.first - modelA.first, modelB.second - modelA.second)
+            } else {
+                hypot(
+                    points[j].first - points[i].first,
+                    points[j].second - points[i].second,
+                )
+            }
+        }
+        val edges = ArrayList<Double>()
+        var total = 0.0
+        var area = source.area
+        var perimeter = source.perimeter
+        var radius = source.radius
+        var extra = source.extra
+        when (source.kind) {
+            MeasureMode.LENGTH -> {
+                if (points.size >= 2) {
+                    val value = distance(0, 1)
+                    edges.add(value)
+                    total = value
+                }
+            }
+            MeasureMode.CONTINUOUS -> {
+                for (i in 1 until points.size) {
+                    val value = distance(i - 1, i)
+                    edges.add(value)
+                    total += value
+                }
+            }
+            MeasureMode.AREA -> {
+                if (points.size >= 3) {
+                    for (i in 1 until points.size) {
+                        val value = distance(i - 1, i)
+                        edges.add(value)
+                        total += value
+                    }
+                    edges.add(distance(points.lastIndex, 0))
+                    val sourcePoints = if (modelPoints.all { it != null }) {
+                        modelPoints.map { it!! }
+                    } else {
+                        points
+                    }
+                    val xs = DoubleArray(sourcePoints.size) { sourcePoints[it].first }
+                    val ys = DoubleArray(sourcePoints.size) { sourcePoints[it].second }
+                    area = GeometryCore.polygonArea(xs, ys)
+                    perimeter = GeometryCore.polygonPerimeter(xs, ys)
+                    total = perimeter
+                }
+            }
+            MeasureMode.ANGLE -> {
+                total = 0.0
+            }
+            MeasureMode.COORD -> {
+                val model = modelPoints.firstOrNull() ?: points.first()
+                extra = "X %.1f\nY %.1f".format(model.first, model.second)
+            }
+            MeasureMode.RADIUS, MeasureMode.ARC -> {
+                radius = source.radius
+            }
+            MeasureMode.NONE, MeasureMode.PIN, MeasureMode.PHOTO,
+            MeasureMode.CALIBRATE, MeasureMode.TEXT, MeasureMode.LINE, MeasureMode.SKETCH,
+            MeasureMode.CLOUD, MeasureMode.LEADER -> Unit
+        }
+        return Measurement(
+            source.kind,
+            ArrayList(points),
+            edges,
+            total,
+            area,
+            perimeter,
+            radius,
+            extra,
+        )
     }
 
     fun clearMeasurements() {
@@ -382,6 +719,24 @@ class DrawingView(context: Context) : android.view.View(context) {
         pendingModel.clear()
         updateResultPanel()
         invalidate()
+    }
+
+    fun setMeasurements(items: List<Measurement>) {
+        measurements.clear()
+        measurements.addAll(items)
+        pending.clear()
+        pendingModel.clear()
+        updateResultPanel()
+        invalidate()
+    }
+
+    fun removeMeasurement(measurement: Measurement): Boolean {
+        val removed = measurements.remove(measurement)
+        if (removed) {
+            updateResultPanel()
+            invalidate()
+        }
+        return removed
     }
 
     /** 选择模式点图元：拾取最近图元，回调属性描述（null=没点到，恢复测量信息面板） */
@@ -529,6 +884,150 @@ class DrawingView(context: Context) : android.view.View(context) {
         return best
     }
 
+    private data class SegmentHit(
+        val start: Pair<Double, Double>,
+        val end: Pair<Double, Double>,
+        val click: Pair<Double, Double>,
+    )
+
+    /** 角度测量：在屏幕容差内选择最近的真实线段或多段线边。 */
+    private fun nearestLinearSegment(world: Pair<Double, Double>): SegmentHit? {
+        val sx = worldToScreenX(world.first)
+        val sy = worldToScreenY(world.second)
+        val tolerance = 24.0 * resources.displayMetrics.density
+        var best: SegmentHit? = null
+        var bestDistance = tolerance
+
+        fun screenDistance(
+            ax: Double, ay: Double, bx: Double, by: Double,
+        ): Double {
+            val sax = worldToScreenX(ax)
+            val say = worldToScreenY(ay)
+            val sbx = worldToScreenX(bx)
+            val sby = worldToScreenY(by)
+            val dx = sbx - sax
+            val dy = sby - say
+            val len2 = dx * dx + dy * dy
+            val t = if (len2 < 1e-9) 0.0
+            else (((sx - sax) * dx + (sy - say) * dy) / len2).coerceIn(0.0, 1.0)
+            return hypot(sx - (sax + t * dx), sy - (say + t * dy))
+        }
+
+        fun consider(
+            start: Pair<Double, Double>,
+            end: Pair<Double, Double>,
+        ) {
+            val d = screenDistance(start.first, start.second, end.first, end.second)
+            if (d <= bestDistance) {
+                bestDistance = d
+                best = SegmentHit(start, end, world)
+            }
+        }
+
+        fun searchDocument(doc: SkdwDocument, grid2: GridIndex?) {
+            val candidates = ArrayList<SkdwDocument.Entity>()
+            if (grid2 != null) {
+                val r = tolerance / scale
+                val (cs, rs) = grid2.range(world.first - r, world.second - r,
+                    world.first + r, world.second + r)
+                for (row in rs.first..rs.second) {
+                    val base = row * grid2.cols
+                    for (col in cs.first..cs.second) {
+                        candidates.addAll(grid2.cells[base + col])
+                    }
+                }
+                candidates.addAll(grid2.big)
+            } else {
+                candidates.addAll(doc.entities)
+            }
+            for (entity in candidates) {
+                when (entity) {
+                    is SkdwDocument.Entity.Line -> consider(
+                        Pair(entity.x1, entity.y1),
+                        Pair(entity.x2, entity.y2),
+                    )
+                    is SkdwDocument.Entity.Polyline -> {
+                        for (i in 1 until entity.xs.size) {
+                            consider(
+                                Pair(entity.xs[i - 1], entity.ys[i - 1]),
+                                Pair(entity.xs[i], entity.ys[i]),
+                            )
+                        }
+                    }
+                    else -> Unit
+                }
+            }
+        }
+
+        val paperDoc = document ?: return null
+        searchDocument(paperDoc, grid)
+        val model = overlayDoc
+        if (model != null) {
+            val modelClick = paperPointToModel(world.first, world.second)
+                ?: return best
+            val r = tolerance / scale
+            val candidates = ArrayList<SkdwDocument.Entity>()
+            val idx = overlayGrid
+            if (idx != null) {
+                val (cs, rs) = idx.range(
+                    modelClick.first - r, modelClick.second - r,
+                    modelClick.first + r, modelClick.second + r,
+                )
+                for (row in rs.first..rs.second) {
+                    val base = row * idx.cols
+                    for (col in cs.first..cs.second) {
+                        candidates.addAll(idx.cells[base + col])
+                    }
+                }
+                candidates.addAll(idx.big)
+            } else {
+                candidates.addAll(model.entities)
+            }
+            fun paperPair(x: Double, y: Double): Pair<Double, Double>? =
+                modelPointToPaper(x, y)
+            for (entity in candidates) {
+                when (entity) {
+                    is SkdwDocument.Entity.Line -> {
+                        val a = paperPair(entity.x1, entity.y1) ?: continue
+                        val b = paperPair(entity.x2, entity.y2) ?: continue
+                        consider(a, b)
+                    }
+                    is SkdwDocument.Entity.Polyline -> {
+                        for (i in 1 until entity.xs.size) {
+                            val a = paperPair(entity.xs[i - 1], entity.ys[i - 1]) ?: continue
+                            val b = paperPair(entity.xs[i], entity.ys[i]) ?: continue
+                            consider(a, b)
+                        }
+                    }
+                    else -> Unit
+                }
+            }
+        }
+        return best
+    }
+
+    private fun segmentIntersection(
+        first: SegmentHit,
+        second: SegmentHit,
+    ): Pair<Double, Double>? {
+        val x1 = first.start.first
+        val y1 = first.start.second
+        val x2 = first.end.first
+        val y2 = first.end.second
+        val x3 = second.start.first
+        val y3 = second.start.second
+        val x4 = second.end.first
+        val y4 = second.end.second
+        val d1x = x2 - x1
+        val d1y = y2 - y1
+        val d2x = x4 - x3
+        val d2y = y4 - y3
+        val den = d1x * d2y - d1y * d2x
+        if (abs(den) < 1e-12) return null
+        val t = ((x3 - x1) * d2y - (y3 - y1) * d2x) / den
+        return Pair(x1 + t * d1x, y1 + t * d1y)
+    }
+
     /** 弧长测量：记录圆心/起止点/中点 + 弧长/半径/角度 */
     private fun commitArc(a: SkdwDocument.Entity.Arc, fromModel: Boolean) {
         var sweep = a.a1 - a.a0
@@ -626,8 +1125,18 @@ class DrawingView(context: Context) : android.view.View(context) {
         tapHint = null
         if (mode == MeasureMode.NONE) {
             val pin = pinAt(world)
-            if (pin != null) onPinTapped?.invoke(pin)
-            else pickEntity(world)
+            if (pin != null) {
+                onPinTapped?.invoke(pin)
+            } else {
+                val annotation = annotationAt(world)
+                if (annotation != null) {
+                    onAnnotationTapped?.invoke(annotation)
+                } else {
+                    val measurement = measurementAt(world)
+                    if (measurement != null) onMeasurementTapped?.invoke(measurement)
+                    else pickEntity(world)
+                }
+            }
             return
         }
         val snapped = findSnap(world) ?: world
@@ -635,14 +1144,94 @@ class DrawingView(context: Context) : android.view.View(context) {
         val modelPt = if (overlayDoc != null)
             paperPointToModel(snapped.first, snapped.second) else null
         when (mode) {
+            MeasureMode.CALIBRATE -> {
+                pending.add(snapped)
+                pendingModel.add(modelPt)
+                if (pending.size == 2) {
+                    val a = pendingModel[0]
+                    val b = pendingModel[1]
+                    val rawLength = if (a != null && b != null) {
+                        hypot(b.first - a.first, b.second - a.second)
+                    } else {
+                        hypot(
+                            pending[1].first - pending[0].first,
+                            pending[1].second - pending[0].second,
+                        )
+                    }
+                    pending.clear()
+                    pendingModel.clear()
+                    if (rawLength > 1e-12) {
+                        onCalibrationRequested?.invoke(rawLength)
+                    } else {
+                        tapHint = "两点距离过短，请重新校准"
+                    }
+                }
+            }
             MeasureMode.LENGTH -> {
                 pending.add(snapped); pendingModel.add(modelPt)
                 if (pending.size == 2) commit(MeasureMode.LENGTH)
             }
             MeasureMode.ANGLE -> {
-                // 第1点=顶点，第2/3点=两边端点（角度与比例无关，无需模型映射）
-                pending.add(snapped)
-                if (pending.size == 3) commit(MeasureMode.ANGLE)
+                // 与 CAD 快速看图一致：依次点两条线段，再点文字落点。
+                if (pending.isEmpty()) {
+                    val first = nearestLinearSegment(world)
+                    if (first == null) {
+                        tapHint = "请点击第一条线段"
+                    } else {
+                        angleFirstSegment = first
+                        pending.add(snapped)
+                        tapHint = "请点击第二条线段"
+                    }
+                } else if (angleFirstSegment != null && pending.size == 1) {
+                    val second = nearestLinearSegment(world)
+                    val first = angleFirstSegment
+                    if (second == null) {
+                        tapHint = "请点击第二条线段"
+                    } else {
+                        val vertex = segmentIntersection(first!!, second)
+                        if (vertex == null) {
+                            tapHint = "两条线平行，无法形成角度"
+                            angleFirstSegment = null
+                            pending.clear()
+                        } else {
+                            fun direction(hit: SegmentHit): Pair<Double, Double> {
+                                val towardClick = Pair(
+                                    hit.click.first - vertex.first,
+                                    hit.click.second - vertex.second,
+                                )
+                                val towardLength = hypot(towardClick.first, towardClick.second)
+                                if (towardLength > 1e-9) {
+                                    return Pair(
+                                        towardClick.first / towardLength,
+                                        towardClick.second / towardLength,
+                                    )
+                                }
+                                val dx = hit.end.first - hit.start.first
+                                val dy = hit.end.second - hit.start.second
+                                val length = hypot(dx, dy).coerceAtLeast(1e-9)
+                                return Pair(dx / length, dy / length)
+                            }
+                            val radiusWorld = 70.0 / scale
+                            val d1 = direction(first)
+                            val d2 = direction(second)
+                            pending.clear()
+                            pending.add(vertex)
+                            pending.add(Pair(
+                                vertex.first + d1.first * radiusWorld,
+                                vertex.second + d1.second * radiusWorld,
+                            ))
+                            pending.add(Pair(
+                                vertex.first + d2.first * radiusWorld,
+                                vertex.second + d2.second * radiusWorld,
+                            ))
+                            tapHint = "移动准星放置角度文字，点按确认"
+                        }
+                    }
+                } else if (pending.size == 3) {
+                    pending.add(snapped)
+                    commit(MeasureMode.ANGLE)
+                    angleFirstSegment = null
+                }
             }
             MeasureMode.ARC -> {
                 // 点选最近的圆弧图元
@@ -709,8 +1298,8 @@ class DrawingView(context: Context) : android.view.View(context) {
                 pending.add(snapped); pendingModel.add(modelPt)
                 commit(MeasureMode.COORD)
             }
-            MeasureMode.AREA, MeasureMode.CONTINUOUS -> {
-                // 靠近起点自动闭合（连续测量同样以闭合结束）
+            MeasureMode.AREA -> {
+                // 面积靠近起点自动闭合
                 if (pending.size >= 3) {
                     val first = pending.first()
                     val sx = worldToScreenX(first.first).toFloat()
@@ -722,6 +1311,11 @@ class DrawingView(context: Context) : android.view.View(context) {
                         return
                     }
                 }
+                pending.add(snapped)
+                pendingModel.add(modelPt)
+            }
+            MeasureMode.CONTINUOUS -> {
+                // 连续测量保持开放折线，由操作栏“完成”结束。
                 pending.add(snapped)
                 pendingModel.add(modelPt)
             }
@@ -772,6 +1366,7 @@ class DrawingView(context: Context) : android.view.View(context) {
             MeasureMode.NONE -> {}
         }
         updateResultPanel()
+        notifyInteractionState()
         invalidate()
     }
 
@@ -792,7 +1387,6 @@ class DrawingView(context: Context) : android.view.View(context) {
         val edges = ArrayList<Double>()
         val n = pts.size
         var perimeter = 0.0
-        var closed = kind == MeasureMode.AREA
         var total = 0.0
         var area = 0.0
         var radius = 0.0
@@ -827,7 +1421,7 @@ class DrawingView(context: Context) : android.view.View(context) {
                 }
                 // 闭合边
                 val closing = dist(0, n - 1)
-                edges.add(closing); total += closing; perimeter = total
+                edges.add(closing); total += closing
                 // 使用桌面端共享的 C 几何核心；布局模式优先取模型坐标。
                 val useModel = mpts.size == n && mpts.all { it != null }
                 val source = if (useModel) mpts.map { it!! } else pts
@@ -838,26 +1432,141 @@ class DrawingView(context: Context) : android.view.View(context) {
             }
             MeasureMode.NONE, MeasureMode.ARC, MeasureMode.RADIUS,
             MeasureMode.PIN, MeasureMode.PHOTO,
-            MeasureMode.TEXT, MeasureMode.LINE, MeasureMode.SKETCH,
+            MeasureMode.CALIBRATE, MeasureMode.TEXT, MeasureMode.LINE, MeasureMode.SKETCH,
             MeasureMode.CLOUD, MeasureMode.LEADER -> {}
         }
         measurements.add(Measurement(kind, pts, edges, total, area, perimeter, radius))
         updateResultPanel()
+        notifyInteractionState()
         invalidate()
     }
 
     private fun updateResultPanel() {
         val sb = StringBuilder()
         tapHint?.let { sb.append(it) }
-        if (pending.isNotEmpty()) {
-            if (sb.isNotEmpty()) sb.append("\n")
-            sb.append("进行中：").append(pending.size).append(" 点（靠起点闭合）")
-        }
         measurements.takeLast(3).reversed().forEach { m ->
             if (sb.isNotEmpty()) sb.append("\n")
             sb.append(m.label(unitScale).replace("\n", "，"))
         }
         onMeasurementChanged?.invoke(sb.toString())
+    }
+
+    /** 浏览模式命中测量线或圆弧附近，返回最上层测量。 */
+    private fun measurementAt(world: Pair<Double, Double>): Measurement? {
+        val sx = worldToScreenX(world.first)
+        val sy = worldToScreenY(world.second)
+        val tolerance = 24f * resources.displayMetrics.density
+        val sxf = sx.toFloat()
+        val syf = sy.toFloat()
+        fun segDistance(ax: Float, ay: Float, bx: Float, by: Float): Float {
+            val dx = bx - ax
+            val dy = by - ay
+            val len2 = dx * dx + dy * dy
+            val t = if (len2 < 1e-6f) 0f
+            else (((sxf - ax) * dx + (syf - ay) * dy) / len2).coerceIn(0f, 1f)
+            return hypot(
+                (sxf - (ax + t * dx)).toDouble(),
+                (syf - (ay + t * dy)).toDouble(),
+            ).toFloat()
+        }
+        for (m in measurements.asReversed()) {
+            val pts = m.points
+            if (pts.isEmpty()) continue
+            if (m.kind == MeasureMode.RADIUS || m.kind == MeasureMode.ARC) {
+                if (m.radius <= 0.0) continue
+                val cx = worldToScreenX(pts[0].first)
+                val cy = worldToScreenY(pts[0].second)
+                if (abs(hypot(sx - cx, sy - cy) - m.radius * scale) <= tolerance) {
+                    return m
+                }
+                continue
+            }
+            if (m.kind == MeasureMode.ANGLE && pts.size >= 3) {
+                val vx = worldToScreenX(pts[0].first).toFloat()
+                val vy = worldToScreenY(pts[0].second).toFloat()
+                val ax = worldToScreenX(pts[1].first).toFloat()
+                val ay = worldToScreenY(pts[1].second).toFloat()
+                val bx = worldToScreenX(pts[2].first).toFloat()
+                val by = worldToScreenY(pts[2].second).toFloat()
+                if (segDistance(vx, vy, ax, ay) <= tolerance ||
+                    segDistance(vx, vy, bx, by) <= tolerance) {
+                    return m
+                }
+                val label = pts.getOrNull(3)
+                if (label != null) {
+                    val lx = worldToScreenX(label.first)
+                    val ly = worldToScreenY(label.second)
+                    if (abs(sx - lx) <= tolerance * 2 &&
+                        abs(sy - ly) <= tolerance) return m
+                }
+                continue
+            }
+            for (i in 1 until pts.size) {
+                val ax = worldToScreenX(pts[i - 1].first).toFloat()
+                val ay = worldToScreenY(pts[i - 1].second).toFloat()
+                val bx = worldToScreenX(pts[i].first).toFloat()
+                val by = worldToScreenY(pts[i].second).toFloat()
+                if (segDistance(ax, ay, bx, by) <= tolerance) return m
+            }
+            if (m.kind == MeasureMode.AREA && pts.size >= 3) {
+                val ax = worldToScreenX(pts.last().first).toFloat()
+                val ay = worldToScreenY(pts.last().second).toFloat()
+                val bx = worldToScreenX(pts.first().first).toFloat()
+                val by = worldToScreenY(pts.first().second).toFloat()
+                if (segDistance(ax, ay, bx, by) <= tolerance) return m
+            }
+        }
+        return null
+    }
+
+    /** 浏览模式命中已有文字/手绘标注，优先于底图图元。 */
+    private fun annotationAt(world: Pair<Double, Double>): Annotation? {
+        val sx = worldToScreenX(world.first)
+        val sy = worldToScreenY(world.second)
+        val density = resources.displayMetrics.density
+        val tolerance = 24f * density
+        val sxf = sx.toFloat()
+        val syf = sy.toFloat()
+        fun segDistance(ax: Float, ay: Float, bx: Float, by: Float): Float {
+            val dx = bx - ax
+            val dy = by - ay
+            val len2 = dx * dx + dy * dy
+            val t = if (len2 < 1e-6f) 0f
+            else (((sxf - ax) * dx + (syf - ay) * dy) / len2).coerceIn(0f, 1f)
+            return hypot(
+                (sxf - (ax + t * dx)).toDouble(),
+                (syf - (ay + t * dy)).toDouble(),
+            ).toFloat()
+        }
+        for (annotation in annotations.asReversed()) {
+            val points = annotation.points
+            if (points.isEmpty()) continue
+            if (annotation.kind == MeasureMode.TEXT) {
+                val x = worldToScreenX(points[0].first)
+                val y = worldToScreenY(points[0].second)
+                val halfWidth = max(
+                    8f * density,
+                    18f * density + annotation.text.length * 7f * density,
+                )
+                if (sx in (x - halfWidth.toDouble())..(x + halfWidth.toDouble()) &&
+                    sy in (y - 34f * density)..(y + 12f * density)) {
+                    return annotation
+                }
+                continue
+            }
+            for (i in 1 until points.size) {
+                val ax = worldToScreenX(points[i - 1].first).toFloat()
+                val ay = worldToScreenY(points[i - 1].second).toFloat()
+                val bx = worldToScreenX(points[i].first).toFloat()
+                val by = worldToScreenY(points[i].second).toFloat()
+                if (segDistance(ax, ay, bx, by) <= tolerance) return annotation
+            }
+        }
+        return null
+    }
+
+    private fun notifyInteractionState() {
+        onInteractionStateChanged?.invoke(mode, pending.size)
     }
 
     /** 删除最后一条指定类型的测量（定距标定取消/完成后清理） */
@@ -922,6 +1631,133 @@ class DrawingView(context: Context) : android.view.View(context) {
             if (out.size >= limit) break
         }
         return out
+    }
+
+    /**
+     * 从原图尺寸文字与最近线段的配对中估计比例。
+     * 只接受纯数字尺寸文字，并要求至少三个样本落在 2% 的同一比例簇。
+     */
+    fun inferAutoCalibration(): AutoCalibrationResult? {
+        val doc = overlayDoc ?: document ?: return null
+        val numeric = Regex("""^(?:R|Ø|⌀)?(\d+(?:\.\d+)?)(?:mm|m)?$""")
+        val diagonal = hypot(
+            doc.maxX - doc.minX,
+            doc.maxY - doc.minY,
+        ).coerceAtLeast(1.0)
+        val samples = ArrayList<Double>()
+        for (text in doc.entities.asSequence().filterIsInstance<SkdwDocument.Entity.Text>()
+                .take(8000)) {
+            val normalized = text.text.trim()
+                .replace(" ", "")
+                .replace(",", "")
+                .uppercase()
+            val match = numeric.matchEntire(normalized) ?: continue
+            val value = match.groupValues[1].toDoubleOrNull() ?: continue
+            if (value <= 0.0) continue
+            val radius = max(text.height * 15.0, diagonal * 0.002)
+            val index = when {
+                doc === document -> grid
+                doc === overlayDoc -> overlayGrid
+                else -> null
+            }
+            val candidates = LinkedHashSet<SkdwDocument.Entity>()
+            if (index != null) {
+                val (cs, rs) = index.range(
+                    text.x - radius, text.y - radius,
+                    text.x + radius, text.y + radius,
+                )
+                for (row in rs.first..rs.second) {
+                    val base = row * index.cols
+                    for (col in cs.first..cs.second) {
+                        candidates.addAll(index.cells[base + col])
+                    }
+                }
+                candidates.addAll(index.big)
+            } else {
+                candidates.addAll(doc.entities)
+            }
+            data class SegmentCandidate(val length: Double, val distance: Double)
+            val segments = ArrayList<SegmentCandidate>()
+            for (entity in candidates) {
+                if (text.x < entity.bbox[0] - radius ||
+                    text.x > entity.bbox[2] + radius ||
+                    text.y < entity.bbox[1] - radius ||
+                    text.y > entity.bbox[3] + radius) {
+                    continue
+                }
+                when (entity) {
+                    is SkdwDocument.Entity.Line -> {
+                        val length = hypot(entity.x2 - entity.x1, entity.y2 - entity.y1)
+                        if (length > 1e-12) {
+                            segments.add(SegmentCandidate(
+                                length,
+                                pointSegmentDistance(
+                                    text.x, text.y,
+                                    entity.x1, entity.y1, entity.x2, entity.y2,
+                                ),
+                            ))
+                        }
+                    }
+                    is SkdwDocument.Entity.Polyline -> {
+                        for (i in 1 until entity.xs.size) {
+                            val length = hypot(
+                                entity.xs[i] - entity.xs[i - 1],
+                                entity.ys[i] - entity.ys[i - 1],
+                            )
+                            if (length <= 1e-12) continue
+                            segments.add(SegmentCandidate(
+                                length,
+                                pointSegmentDistance(
+                                    text.x, text.y,
+                                    entity.xs[i - 1], entity.ys[i - 1],
+                                    entity.xs[i], entity.ys[i],
+                                ),
+                            ))
+                        }
+                    }
+                    else -> Unit
+                }
+            }
+            segments.sortBy { it.distance }
+            for (candidate in segments.asSequence()
+                    .filter { it.distance <= radius }
+                    .take(4)) {
+                val ratio = value / candidate.length
+                if (ratio.isFinite() && ratio > 1e-8 && ratio < 1e8) {
+                    samples.add(ratio)
+                }
+            }
+        }
+        if (samples.size < 3) return null
+        samples.sort()
+        var bestStart = 0
+        var bestSize = 0
+        var left = 0
+        for (right in samples.indices) {
+            while (samples[right] / samples[left] > 1.02) left++
+            val size = right - left + 1
+            if (size > bestSize) {
+                bestSize = size
+                bestStart = left
+            }
+        }
+        if (bestSize < 3) return null
+        val cluster = samples.subList(bestStart, bestStart + bestSize)
+        val median = cluster[cluster.size / 2]
+        return AutoCalibrationResult(median, cluster.size)
+    }
+
+    private fun pointSegmentDistance(
+        px: Double, py: Double,
+        ax: Double, ay: Double,
+        bx: Double, by: Double,
+    ): Double {
+        val dx = bx - ax
+        val dy = by - ay
+        val len2 = dx * dx + dy * dy
+        val t = if (len2 < 1e-18) 0.0
+        else (((px - ax) * dx + (py - ay) * dy) / len2).coerceIn(0.0, 1.0)
+        return hypot(px - (ax + t * dx), py - (ay + t * dy))
     }
 
     /** 端点/顶点吸附：像素半径内找最近的特征点 */
@@ -1062,6 +1898,8 @@ class DrawingView(context: Context) : android.view.View(context) {
             for (e in doc.entities) drawEntity(canvas, path, doc, e, visible)
         }
         drawMeasurements(canvas)
+        drawObjectEditHandles(canvas)
+        drawPointSelection(canvas)
         drawAnnotations(canvas)
         drawPins(canvas)
         // 拾取高亮：黄色虚线框出选中图元 bbox
@@ -1079,6 +1917,24 @@ class DrawingView(context: Context) : android.view.View(context) {
             val sx = worldToScreenX(it.first).toFloat()
             val sy = worldToScreenY(it.second).toFloat()
             canvas.drawRect(sx - 8, sy - 8, sx + 8, sy + 8, snapPaint)
+        }
+    }
+
+    private fun drawObjectEditHandles(canvas: Canvas) {
+        if (!isEditingObject) return
+        val density = resources.displayMetrics.density
+        measurePaint.color = measureColor
+        measureFill.color = withAlpha(measureColor, 0x33)
+        measurePaint.strokeWidth = 2.5f * density
+        pinTextPaint.color = measureColor
+        pinTextPaint.textSize = 12f * density
+        for (i in editingPoints.indices) {
+            val point = editingPoints[i]
+            val x = worldToScreenX(point.first).toFloat()
+            val y = worldToScreenY(point.second).toFloat()
+            canvas.drawCircle(x, y, 8f * density, measureFill)
+            canvas.drawCircle(x, y, 5.5f * density, measurePaint)
+            canvas.drawText((i + 1).toString(), x, y - 10f * density, pinTextPaint)
         }
     }
 
@@ -1486,7 +2342,7 @@ class DrawingView(context: Context) : android.view.View(context) {
                 MeasureMode.TEXT -> {
                     val x = worldToScreenX(pts[0].first).toFloat()
                     val y = worldToScreenY(pts[0].second).toFloat()
-                    measureTextPaint.textSize = 30f
+                    measureTextPaint.textSize = 16f * resources.displayMetrics.density
                     measureTextPaint.textAlign = Paint.Align.LEFT
                     canvas.drawText(a.text, x + 8f, y - 8f, measureTextPaint)
                     measureTextPaint.textAlign = Paint.Align.CENTER
@@ -1535,7 +2391,7 @@ class DrawingView(context: Context) : android.view.View(context) {
                             ey - 16f * kotlin.math.sin(ang + d), measurePaint)
                     }
                     if (a.text.isNotEmpty()) {
-                        measureTextPaint.textSize = 26f
+                        measureTextPaint.textSize = 14f * resources.displayMetrics.density
                         measureTextPaint.textAlign = Paint.Align.LEFT
                         val right = ex + if (ex >= x) 12f else -measureTextPaint.measureText(a.text) - 12f
                         canvas.drawText(a.text, right,
@@ -1577,7 +2433,6 @@ class DrawingView(context: Context) : android.view.View(context) {
         val len = hypot(bx - ax, by - ay)
         if (len < 2f) return
         val n = max(1, (len / 22f).toInt())
-        val ux = (bx - ax) / len; val uy = (by - ay) / len
         for (i in 0 until n) {
             val cx = ax + (bx - ax) * (i + 0.5f) / n
             val cy = ay + (by - ay) * (i + 0.5f) / n
@@ -1611,11 +2466,9 @@ class DrawingView(context: Context) : android.view.View(context) {
     }
 
     private fun drawMeasurements(canvas: Canvas) {
-        val all = ArrayList<Measurement>(measurements.size + 1)
-        all.addAll(measurements)
         if (pending.size >= 2) {
             // 进行中的预览线
-            measurePaint.color = 0x8831D2A0.toInt()
+            measurePaint.color = withAlpha(measureColor, 0x88)
             for (i in 1 until pending.size) {
                 canvas.drawLine(worldToScreenX(pending[i - 1].first).toFloat(),
                     worldToScreenY(pending[i - 1].second).toFloat(),
@@ -1623,15 +2476,72 @@ class DrawingView(context: Context) : android.view.View(context) {
                     worldToScreenY(pending[i].second).toFloat(), measurePaint)
             }
         }
-        measurePaint.color = 0xFF31D2A0.toInt()
+        if (pointSelecting && selectionWorld != null && pending.isNotEmpty()
+            && editingPendingIndex < 0) {
+            val a = pending.last()
+            val b = selectionWorld!!
+            measurePaint.color = withAlpha(measureColor, 0xAA)
+            canvas.drawLine(
+                worldToScreenX(a.first).toFloat(),
+                worldToScreenY(a.second).toFloat(),
+                worldToScreenX(b.first).toFloat(),
+                worldToScreenY(b.second).toFloat(),
+                measurePaint,
+            )
+        }
+        measurePaint.color = measureColor
         for (m in measurements) drawOne(canvas, m)
-        // 进行中的点
-        for (p in pending) {
+        // 已选控制点：触摸命中范围大于视觉尺寸，靠近即可拖动调整。
+        for (i in pending.indices) {
+            val p = pending[i]
             val sx = worldToScreenX(p.first).toFloat()
             val sy = worldToScreenY(p.second).toFloat()
-            canvas.drawCircle(sx, sy, 5f, measureFill)
-            canvas.drawCircle(sx, sy, 5f, measurePaint)
+            val selected = i == editingPendingIndex
+            measureFill.color = withAlpha(measureColor, if (selected) 0x55 else 0x22)
+            canvas.drawCircle(sx, sy, if (selected) 14f else 10f, measureFill)
+            measurePaint.strokeWidth = if (selected) 4f else 2.5f
+            canvas.drawCircle(sx, sy, if (selected) 11f else 8f, measurePaint)
+            pinTextPaint.textSize = 18f
+            pinTextPaint.color = measureColor
+            canvas.drawText((i + 1).toString(), sx, sy - 15f, pinTextPaint)
         }
+        measurePaint.strokeWidth = 2f * resources.displayMetrics.density
+        measureFill.color = withAlpha(measureColor, 0x2E)
+        measurePaint.color = measureColor
+        measureTextPaint.color = measureColor
+    }
+
+    private fun drawPointSelection(canvas: Canvas) {
+        val selected = selectionWorld ?: return
+        if (!pointSelecting) return
+        val x = worldToScreenX(selected.first).toFloat()
+        val y = worldToScreenY(selected.second).toFloat()
+        canvas.save()
+        measurePaint.color = 0xFFFFC94D.toInt()
+        measurePaint.strokeWidth = 2f
+        canvas.drawCircle(x, y, 18f, measurePaint)
+        canvas.drawLine(x - 28f, y, x - 8f, y, measurePaint)
+        canvas.drawLine(x + 8f, y, x + 28f, y, measurePaint)
+        canvas.drawLine(x, y - 28f, x, y - 8f, measurePaint)
+        canvas.drawLine(x, y + 8f, x, y + 28f, measurePaint)
+        // 手指到准星的引导线，明确“准星在手指上方”。
+        if (selectionScreen.second > y + 24f) {
+            measurePaint.color = 0x66FFC94D
+            measurePaint.strokeWidth = 1.5f
+            canvas.drawLine(x, y + 22f,
+                selectionScreen.first, selectionScreen.second, measurePaint)
+        }
+        pinTextPaint.textSize = 20f
+        pinTextPaint.color = 0xFFFFE08A.toInt()
+        canvas.drawText(
+            if (editingPendingIndex >= 0) "拖动调整，松开确认" else "松开确认选点",
+            x + 24f,
+            y - 24f,
+            pinTextPaint,
+        )
+        canvas.restore()
+        measurePaint.color = measureColor
+        pinTextPaint.color = 0xFFFFFFFF.toInt()
     }
 
     private fun drawOne(canvas: Canvas, m: Measurement) {
@@ -1668,7 +2578,24 @@ class DrawingView(context: Context) : android.view.View(context) {
                 canvas.drawArc(vx - rPx, vy - rPx, vx + rPx, vy + rPx,
                     Math.toDegrees(a1).toFloat(), Math.toDegrees(sweep).toFloat(),
                     false, measurePaint)
-                drawLabel(canvas, vx, vy, m.label)
+                val labelPoint = pts.getOrNull(3)
+                if (labelPoint == null) {
+                    drawLabel(canvas, vx, vy, m.label)
+                } else {
+                    val lx = worldToScreenX(labelPoint.first).toFloat()
+                    val ly = worldToScreenY(labelPoint.second).toFloat()
+                    if (hypot((lx - vx).toDouble(), (ly - vy).toDouble()) >
+                        46.0 * resources.displayMetrics.density) {
+                        val midAngle = a1 + sweep / 2
+                        val ax = vx + rPx * kotlin.math.cos(midAngle).toFloat()
+                        val ay = vy + rPx * kotlin.math.sin(midAngle).toFloat()
+                        val old = measurePaint.strokeWidth
+                        measurePaint.strokeWidth = resources.displayMetrics.density
+                        canvas.drawLine(ax, ay, lx, ly, measurePaint)
+                        measurePaint.strokeWidth = old
+                    }
+                    drawLabel(canvas, lx, ly, m.label)
+                }
             }
             MeasureMode.COORD -> {
                 val x = worldToScreenX(pts[0].first).toFloat()
@@ -1699,7 +2626,7 @@ class DrawingView(context: Context) : android.view.View(context) {
                     worldToScreenY(pts[3].second).toFloat(), m.label(unitScale))
             }
             MeasureMode.LENGTH, MeasureMode.CONTINUOUS -> {
-                // 尺寸线压在线段上 + 45° 起止斜线 + 数字在线上方（建筑制图风格）
+                // 尺寸线贴线段，端部用建筑斜线；连续测量只显示最终总长。
                 var i = 0
                 while (i + 1 < pts.size) {
                     val a = pts[i]; val b = pts[i + 1]
@@ -1710,20 +2637,21 @@ class DrawingView(context: Context) : android.view.View(context) {
                     canvas.drawLine(ax, ay, bx, by, measurePaint)
                     tick(canvas, ax, ay, bx, by)
                     tick(canvas, bx, by, ax, ay)
-                    val len = if (i < m.edgeLengths.size) m.edgeLengths[i] else 0.0
-                    val text = if (m.kind == MeasureMode.LENGTH) m.label(unitScale)
-                    else "%.0f".format(len * unitScale)
-                    drawLabel(canvas, (ax + bx) / 2, (ay + by) / 2, text,
-                        atan2(by - ay, bx - ax))
+                    if (m.kind == MeasureMode.LENGTH) {
+                        drawLabel(canvas, (ax + bx) / 2, (ay + by) / 2,
+                            m.label(unitScale), atan2(by - ay, bx - ax))
+                    }
                     i++
                 }
-                // 连续测量闭合时画回边
                 if (m.kind == MeasureMode.CONTINUOUS && pts.size > 2) {
-                    val a = pts.last(); val b = pts.first()
-                    canvas.drawLine(worldToScreenX(a.first).toFloat(),
-                        worldToScreenY(a.second).toFloat(),
-                        worldToScreenX(b.first).toFloat(),
-                        worldToScreenY(b.second).toFloat(), measurePaint)
+                    val a = pts[pts.lastIndex - 1]
+                    val b = pts.last()
+                    val ax = worldToScreenX(a.first).toFloat()
+                    val ay = worldToScreenY(a.second).toFloat()
+                    val bx = worldToScreenX(b.first).toFloat()
+                    val by = worldToScreenY(b.second).toFloat()
+                    drawLabel(canvas, (ax + bx) / 2f, (ay + by) / 2f,
+                        m.label(unitScale), atan2(by - ay, bx - ax))
                 }
             }
             MeasureMode.AREA -> {
@@ -1745,7 +2673,7 @@ class DrawingView(context: Context) : android.view.View(context) {
                     worldToScreenY(cy / pts.size).toFloat(), m.label(unitScale))
             }
             MeasureMode.NONE, MeasureMode.PIN, MeasureMode.PHOTO,
-            MeasureMode.TEXT, MeasureMode.LINE, MeasureMode.SKETCH,
+            MeasureMode.CALIBRATE, MeasureMode.TEXT, MeasureMode.LINE, MeasureMode.SKETCH,
             MeasureMode.CLOUD, MeasureMode.LEADER -> {}
         }
     }
@@ -1757,7 +2685,7 @@ class DrawingView(context: Context) : android.view.View(context) {
         if (len < 1f) return
         val ux = dx / len; val uy = dy / len
         // 相对线方向 45°
-        val size = 12f
+        val size = 4f * resources.displayMetrics.density
         val mx = x - ux * size * 0.5f
         val my = y - uy * size * 0.5f
         val tx = mx + (ux + uy) * size * 0.7f
@@ -1767,7 +2695,8 @@ class DrawingView(context: Context) : android.view.View(context) {
 
     private fun drawLabel(canvas: Canvas, x: Float, y: Float, text: String,
                           angle: Float = 0f) {
-        measureTextPaint.textSize = 26f
+        val density = resources.displayMetrics.density
+        measureTextPaint.textSize = 15f * density
         val lines = text.split("\n")
         canvas.save()
         if (abs(angle) > 0.01f && abs(abs(angle) - Math.PI.toFloat()) > 0.01f) {
@@ -1776,13 +2705,16 @@ class DrawingView(context: Context) : android.view.View(context) {
             if (a < -Math.PI / 2) a += Math.PI.toFloat()
             canvas.rotate(-a, x, y)
         }
-        var base = y - lines.size * 15f - 8f
+        var base = y - lines.size * 9f * density - 5f * density
         for (line in lines) {
             canvas.drawText(line, x, base, measureTextPaint)
-            base += 30f
+            base += 18f * density
         }
         canvas.restore()
     }
+
+    private fun withAlpha(color: Int, alpha: Int): Int =
+        (color and 0x00FFFFFF) or ((alpha and 0xFF) shl 24)
 
     // ---------------------------------------------------------- 触摸分发
 
@@ -1790,12 +2722,38 @@ class DrawingView(context: Context) : android.view.View(context) {
         // 先喂手势检测器：下面的分支无论是否 return，捏合缩放/单击/双击
         // 都必须先收到事件（之前放在末尾，双指分支 return 后缩放完全失效）
         scaleDetector.onTouchEvent(event)
-        gestureDetector.onTouchEvent(event)
+        if (mode == MeasureMode.NONE && !isEditingObject) {
+            gestureDetector.onTouchEvent(event)
+        }
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 lastTouchX = event.x
                 lastTouchY = event.y
+                if ((mode != MeasureMode.NONE || isEditingObject) &&
+                    mode != MeasureMode.SKETCH) {
+                    pointSelecting = true
+                    editingPendingIndex = pendingHandleIndexAt(event.x, event.y)
+                    if (editingPendingIndex >= 0) {
+                        val points = if (isEditingObject) editingPoints else pending
+                        val point = points[editingPendingIndex]
+                        val px = worldToScreenX(point.first).toFloat()
+                        val py = worldToScreenY(point.second).toFloat()
+                        editingHandleOffset = Pair(px - event.x, py - event.y)
+                        selectionWorld = point
+                        selectionScreen = Pair(px, py)
+                    } else {
+                        editingHandleOffset = Pair(0f, -selectionLiftPx)
+                        val world = screenToWorld(
+                            event.x, (event.y - selectionLiftPx).coerceAtLeast(8f))
+                        selectionWorld = findSnap(world) ?: world
+                        selectionScreen = Pair(
+                            event.x, (event.y - selectionLiftPx).coerceAtLeast(8f))
+                    }
+                    pointMagnifier?.show(selectionScreen.first, selectionScreen.second)
+                    invalidate()
+                    return true
+                }
                 dragging = true
                 // 手绘：按下开始采点
                 if (mode == MeasureMode.SKETCH) {
@@ -1804,6 +2762,9 @@ class DrawingView(context: Context) : android.view.View(context) {
                 }
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
+                pointSelecting = false
+                editingPendingIndex = -1
+                pointMagnifier?.dismiss()
                 // 双指进入：平移基准取两指中点，避免第二根手指落下瞬间跳位
                 val mid = pointerMid(event, -1)
                 lastTouchX = mid.first
@@ -1816,6 +2777,10 @@ class DrawingView(context: Context) : android.view.View(context) {
                 lastTouchY = mid.second
             }
             MotionEvent.ACTION_MOVE -> {
+                if (pointSelecting && event.pointerCount == 1) {
+                    updatePointSelection(event.x, event.y)
+                    return true
+                }
                 // 手绘模式：采点不拖图纸
                 if (mode == MeasureMode.SKETCH) {
                     val w = screenToWorld(event.x, event.y)
@@ -1856,6 +2821,18 @@ class DrawingView(context: Context) : android.view.View(context) {
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 dragging = false
                 snapPoint = null
+                if (pointSelecting) {
+                    pointSelecting = false
+                    pointMagnifier?.dismiss()
+                    if (event.actionMasked == MotionEvent.ACTION_UP) {
+                        commitPointSelection()
+                    }
+                    editingPendingIndex = -1
+                    editingHandleOffset = Pair(0f, 0f)
+                    selectionWorld = null
+                    invalidate()
+                    return true
+                }
                 // 手绘：抬起提交（至少 2 点且有一定长度）
                 if (mode == MeasureMode.SKETCH && event.actionMasked == MotionEvent.ACTION_UP) {
                     if (sketchPts.size >= 2) {

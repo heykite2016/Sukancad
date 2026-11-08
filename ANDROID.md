@@ -9,16 +9,22 @@
 - 模型空间、布局、视口、图层、外部参照和块属性导出。
 - INSERT/MINSERT 变换、SPLINE、2D/3D 多段线、HATCH、TEXT/MTEXT/ATTRIB。
 - SKDW 二进制缓存。
-- Android Canvas 平移、缩放、图层显隐、文字查找和布局切换。
-- 长度、连续、面积、角度、弧长、半径和坐标测量。
-- 文字、直线、云线、引线、编号、照片和本地标注保存。
-- DWG/DXF 与 ZIP/RAR 图纸库导入。
+- Android Canvas 平移、双指缩放、图层显隐、文字查找和布局切换。
+- Canvas 自绘底栏和单排工具条，工具采用图标加文字，横向滑动，不弹多排大面板。
+- 测量：长度、连续、面积、角度、弧长、半径。
+- 角度测量按移动端习惯先点两条线段，再点文字落点。
+- 自动比例校准：从原图数字尺寸与对应线段的一致性推断比例。
+- 手动比例校准：拾取已知长度的两个端点后输入标注长度，与 PC 端流程一致。
+- 标注只保留文字标注；“标注管理”统一查看、定位、移动或删除测量和文字标注。
+- 已完成的测量和文字标注按模型/布局分别保存，重新打开图纸时恢复。
+- DWG/DXF 与 ZIP/RAR 图纸库导入；微信等外部应用打开 ZIP 后自动解压并清理压缩包。
+- 本机图纸列表左滑显示“删除”；最近列表左滑显示“移除”，只移除记录，不删除原图纸。
 - 与桌面端共享 `src/core/cad_geometry.c`：面积、周长、角度、圆和弧长计算。
 
 ## 当前未移植
 
 - PDF 页面渲染与测量。
-- 桌面端 `2.0.1` 的完整 UI、测量面板和标注样式系统。
+- 桌面端全部高级标注样式和批量打印能力。
 - x86_64 Android ABI；当前只构建 `arm64-v8a`。
 - 正式发布签名；当前 Release APK 使用 debug keystore。
 
@@ -87,17 +93,20 @@ cd android
 ./gradlew :app:connectedDebugAndroidTest
 ```
 
-当前设备测试：
+当前设备测试共 `11/11`，覆盖：
 
-- `sharedGeometryMatchesDesktopCore`：共享面积、周长、角度、圆和弧长。
-- `parsesDxfThroughNativePipeline`：DXF → LibreDWG → SKDW → Kotlin 文档模型。
-
-已在 Android 平板 `OPD2515` 上通过 `2/2`。
+- 共享面积、周长、角度、圆和弧长。
+- DXF → LibreDWG → SKDW → Kotlin 文档模型。
+- 测量准星选点、控制柄拖动和已有测量端点修改。
+- 连续测量操作栏收尾、角度两点选线加文字落点。
+- 自动比例校准样本识别。
+- ZIP 解压、清理压缩包、缓存清理不删图。
+- 图纸重命名/删除、最近列表移除不删原文件。
 
 ## 后续工作
 
-1. 使用 Android `PdfRenderer` 增加 PDF 多页背景、测量和打印。
-2. 将桌面端标注样式与测量交互逐项迁移。
+1. 使用 Android `PdfRenderer` 增加 PDF 多页背景与测量。
+2. 继续按触摸操作校正桌面端测量工具的移动端映射。
 3. 增加 Android x86_64 或模拟器 ABI。
 4. 配置正式 keystore 和 AAB 发布。
 5. 建立 Android CI，至少执行 assembleDebug、Lint 和设备测试。

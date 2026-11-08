@@ -1790,6 +1790,13 @@ void MainWindow::createInterface()
             actionForMode(CadView::ToolMode::Calibrate)) {
         toolbar->addAction(calibrateAction);
     }
+    auto *autoCalibrateAction =
+        makeAction(QStringLiteral("自动校准比例"),
+                   QStringLiteral("calibrate"),
+                   QKeySequence(QStringLiteral("Ctrl+Shift+C")));
+    connect(autoCalibrateAction, &QAction::triggered, this,
+            &MainWindow::autoCalibrateDrawing);
+    toolbar->addAction(autoCalibrateAction);
     auto *deleteMenu = new QMenu(toolbar);
     deleteMenu->addAction(m_eraseAction);
     deleteMenu->addAction(m_deleteAllAction);
@@ -4974,6 +4981,168 @@ void MainWindow::requestCalibration(double rawLength)
     refreshStatus();
 }
 
+void MainWindow::autoCalibrateDrawing()
+{
+    if (!m_view || !m_view->document()) {
+        return;
+    }
+    const CadDocument &document = *m_view->document();
+    const DisplaySettings settings = m_view->displaySettings();
+    const double width = document.bounds.width();
+    const double height = document.bounds.height();
+    const double diagonal =
+        std::hypot(width, height);
+    const QRegularExpression numeric(
+        QStringLiteral("^(?:R|Ø|⌀)?(\\d+(?:\\.\\d+)?)(?:MM|M)?$"),
+        QRegularExpression::CaseInsensitiveOption);
+    QVector<double> ratios;
+    ratios.reserve(256);
+
+    for (const CadEntity &text : document.entities) {
+        if (text.type != CadEntityType::Text) {
+            continue;
+        }
+        QString normalized = text.text.trimmed();
+        normalized.remove(QRegularExpression(QStringLiteral("\\s+")));
+        normalized.remove(QLatin1Char(','));
+        const QRegularExpressionMatch match = numeric.match(normalized);
+        if (!match.hasMatch()) {
+            continue;
+        }
+        bool ok = false;
+        const double displayedValue =
+            match.captured(1).toDouble(&ok);
+        if (!ok || displayedValue <= 0.0) {
+            continue;
+        }
+        const double radius = std::max(
+            text.textHeight * 16.0,
+            diagonal * 0.0025);
+
+        struct Candidate {
+            double length = 0.0;
+            double distance = 0.0;
+        };
+        QVector<Candidate> dimensionCandidates;
+        QVector<Candidate> lineCandidates;
+        for (const CadEntity &entity : document.entities) {
+            if (!entity.bounds.adjusted(
+                    -radius, -radius, radius, radius)
+                     .contains(text.textPosition)) {
+                continue;
+            }
+            for (const CadDimensionEdge &edge : entity.dimensionEdges) {
+                if (edge.length <= 1.0e-12) {
+                    continue;
+                }
+                dimensionCandidates.append({
+                    edge.length,
+                    QLineF(text.textPosition, edge.midpoint).length()
+                });
+            }
+            if (entity.type != CadEntityType::Segment
+                && entity.type != CadEntityType::Polyline) {
+                continue;
+            }
+            for (const QLineF &line : entity.segments()) {
+                const QPointF direction = line.p2() - line.p1();
+                const double lengthSquared =
+                    QPointF::dotProduct(direction, direction);
+                if (lengthSquared <= 1.0e-18) {
+                    continue;
+                }
+                const double t = std::clamp(
+                    QPointF::dotProduct(
+                        text.textPosition - line.p1(), direction)
+                        / lengthSquared,
+                    0.0, 1.0);
+                const QPointF foot = line.p1() + direction * t;
+                lineCandidates.append({
+                    line.length(),
+                    QLineF(text.textPosition, foot).length()
+                });
+            }
+        }
+        auto nearestCandidates = [&radius](QVector<Candidate> &candidates) {
+            std::sort(candidates.begin(), candidates.end(),
+                [](const Candidate &a, const Candidate &b) {
+                    return a.distance < b.distance;
+                });
+            QVector<Candidate> accepted;
+            for (const Candidate &candidate : candidates) {
+                if (candidate.distance > radius || accepted.size() >= 4) {
+                    break;
+                }
+                accepted.append(candidate);
+            }
+            return accepted;
+        };
+        QVector<Candidate> accepted =
+            dimensionCandidates.isEmpty()
+            ? nearestCandidates(lineCandidates)
+            : nearestCandidates(dimensionCandidates);
+        for (const Candidate &candidate : accepted) {
+            if (candidate.length <= 1.0e-12) {
+                continue;
+            }
+            const double ratio = displayedValue / candidate.length;
+            if (std::isfinite(ratio)
+                && ratio > 1.0e-8 && ratio < 1.0e8) {
+                ratios.append(ratio);
+            }
+        }
+    }
+    if (ratios.size() < 3) {
+        QMessageBox::information(
+            this, QStringLiteral("自动校准比例"),
+            QStringLiteral(
+                "没有找到足够的“尺寸文字 + 对应线段”样本。\n"
+                "请使用“校准比例”，拾取两个已知端点后手动输入长度。"));
+        return;
+    }
+
+    std::sort(ratios.begin(), ratios.end());
+    int bestStart = 0;
+    int bestCount = 0;
+    int left = 0;
+    for (int right = 0; right < ratios.size(); ++right) {
+        while (ratios[right] / ratios[left] > 1.02) {
+            ++left;
+        }
+        const int count = right - left + 1;
+        if (count > bestCount) {
+            bestCount = count;
+            bestStart = left;
+        }
+    }
+    if (bestCount < 3) {
+        QMessageBox::information(
+            this, QStringLiteral("自动校准比例"),
+            QStringLiteral(
+                "尺寸样本之间的比例不一致，无法可靠自动校准。\n"
+                "请使用“校准比例”手动指定已知长度。"));
+        return;
+    }
+
+    const double ratio =
+        ratios[bestStart + bestCount / 2];
+    m_view->document()->metersPerDrawingUnit =
+        ratio * measuringUnitMeters(settings.lengthUnit);
+    m_view->document()->calibrated = true;
+    rememberCalibrationRecord(*m_view->document());
+    saveAnnotationsNow();
+    refreshStatus();
+    m_view->update();
+    QMessageBox::information(
+        this, QStringLiteral("自动校准比例"),
+        QStringLiteral(
+            "自动校准完成。\n"
+            "采用 %1 个一致的尺寸样本。\n"
+            "当前换算比例：1 图纸单位 = %2 米。")
+            .arg(bestCount)
+            .arg(m_view->document()->metersPerDrawingUnit, 0, 'g', 10));
+}
+
 void MainWindow::requestTextAnnotation(const QPointF &position)
 {
     bool accepted = false;
@@ -6555,6 +6724,7 @@ void MainWindow::showHelp()
         <h3>测量工具</h3>
         <ul>
           <li>支持对齐、线性、连续、批量、矩形、多边形、圆面积、填充面积、侧面积、半径、角度和弧长测量；文字注释与比例校准位于主工具栏。</li>
+          <li>“自动校准比例”（<kbd>Ctrl+Shift+C</kbd>）从原图尺寸文字与对应线段中寻找一致样本；样本不足时改用手动校准，拾取已知长度的两个端点。</li>
           <li>连续测量中可直接点击圆弧本体，系统自动选择最近端点、沿圆弧取整段弧长，并保留绘制真实圆弧。</li>
           <li>连续、批量和多边形可用 <kbd>Esc</kbd>、右键、<kbd>Enter</kbd> 或双击结束，再单击放置尺寸文字。</li>
           <li>连续测量把尺寸线直接放在实测线段或圆弧上，端点使用圆点，逐段长度沿该段放置；总结果固定在进行左键确认的位置，并用箭头指向测量路径上的最近垂足。</li>
@@ -6617,6 +6787,7 @@ void MainWindow::showHelp()
           <tr><td><kbd>Shift+R</kbd> / <kbd>O</kbd> / <kbd>F</kbd> / <kbd>R</kbd></td><td>矩形 / 圆 / 填充 / 半径</td></tr>
           <tr><td><kbd>G</kbd> / <kbd>K</kbd></td><td>角度 / 弧长</td></tr>
           <tr><td><kbd>Shift+S</kbd> / <kbd>Shift+C</kbd></td><td>侧面积 / 比例校准</td></tr>
+          <tr><td><kbd>Ctrl+Shift+C</kbd></td><td>自动校准比例</td></tr>
           <tr><td><kbd>T</kbd> / <kbd>Z</kbd> / <kbd>0</kbd></td><td>文字 / 窗口缩放 / 显示全图</td></tr>
           <tr><td><kbd>Ctrl+P</kbd> / <kbd>Shift+Delete</kbd></td><td>打印预览 / 删除全部标注</td></tr>
           <tr><td><kbd>Delete</kbd> / <kbd>Esc</kbd></td><td>删除所选标注 / 取消或结束路径</td></tr>
@@ -8293,6 +8464,8 @@ const QVector<CommandSpec> &commandSpecTable()
          "选择起点、弧上点和终点创建弧长标注"},
         {"TEXT", "DT DTEXT TEXT MTEXT", "文字注释",
          "单击位置后输入文字"},
+        {"AUTOCALIBRATE", "AUTOCAL AUTO-CAL AUTOCALIBRATE", "自动校准比例",
+         "从原图尺寸文字与对应线段自动识别比例"},
         {"CALIBRATE", "CAL CALIBRATE", "比例校准",
          "选择已知长度的两个端点校准图纸比例"},
         {"ERASE", "E ERASE DEL", "删除标注",
@@ -8702,6 +8875,14 @@ void MainWindow::executeCommand(const QString &raw)
             return;
         }
         m_deleteAllAction->trigger();
+        return;
+    }
+    if (id == QLatin1String("AUTOCALIBRATE")) {
+        if (!hasDocument) {
+            echoCommandError(QStringLiteral("没有打开的图纸。"));
+            return;
+        }
+        autoCalibrateDrawing();
         return;
     }
     if (id == QLatin1String("HELP")) {

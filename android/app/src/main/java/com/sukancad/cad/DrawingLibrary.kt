@@ -21,6 +21,8 @@ object DrawingLibrary {
 
     private const val TAG = "SukancadImport"
 
+    data class CacheInfo(val files: Int, val bytes: Long)
+
     data class Item(val file: File) {
         val isFolder: Boolean get() = file.isDirectory
         val name: String get() = file.name
@@ -54,6 +56,58 @@ object DrawingLibrary {
             ?.filter { it.isNotEmpty() }
             ?.map { File(it) }?.filter { it.isFile }?.map { Item(it) }
             ?: emptyList()
+
+    fun clearRecent(context: Context) {
+        context.getSharedPreferences("skdw_settings", Context.MODE_PRIVATE)
+            .edit().remove("recent").apply()
+    }
+
+    /** 从最近列表移除，不触碰原图纸文件。 */
+    fun removeRecent(context: Context, path: String) {
+        val prefs = context.getSharedPreferences("skdw_settings", Context.MODE_PRIVATE)
+        val next = prefs.getString("recent", "")
+            ?.split("\n")
+            ?.filter { it.isNotEmpty() && it != path }
+            ?: emptyList()
+        prefs.edit().putString("recent", next.joinToString("\n")).apply()
+    }
+
+    fun cacheInfo(context: Context, root: File = libraryDir(context)): CacheInfo {
+        var files = 0
+        var bytes = 0L
+        val queue = ArrayDeque<File>()
+        queue.add(root)
+        while (queue.isNotEmpty()) {
+            val dir = queue.removeFirst()
+            dir.listFiles()?.forEach { file ->
+                if (file.isDirectory) {
+                    queue.add(file)
+                } else if (file.name.contains(".skdw", ignoreCase = true)) {
+                    files++
+                    bytes += file.length()
+                }
+            }
+        }
+        return CacheInfo(files, bytes)
+    }
+
+    fun clearParsedCaches(context: Context,
+                          root: File = libraryDir(context)): CacheInfo {
+        val before = cacheInfo(context, root)
+        val queue = ArrayDeque<File>()
+        queue.add(root)
+        while (queue.isNotEmpty()) {
+            val dir = queue.removeFirst()
+            dir.listFiles()?.forEach { file ->
+                if (file.isDirectory) queue.add(file)
+                else if (file.name.contains(".skdw", ignoreCase = true)) file.delete()
+            }
+        }
+        context.cacheDir.listFiles()?.forEach {
+            if (it.isFile && it.name.startsWith("import_")) it.delete()
+        }
+        return before
+    }
 
     /** 浏览某个目录（root = 图纸库根）。文件夹在前，其余按时间倒序。 */
     fun list(context: Context, dir: File = libraryDir(context)): List<Item> {

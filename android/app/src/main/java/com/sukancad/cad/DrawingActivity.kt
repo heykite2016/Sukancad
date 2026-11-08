@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.app.Dialog
 import android.content.Context
 import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
@@ -11,10 +12,15 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import com.google.android.material.bottomsheet.BottomSheetDialog
+import com.google.android.material.bottomsheet.BottomSheetBehavior
+import com.google.android.material.button.MaterialButton
 import java.io.File
 import java.util.concurrent.Executors
 import kotlin.concurrent.thread
@@ -25,27 +31,9 @@ class DrawingActivity : AppCompatActivity() {
     private lateinit var drawingView: DrawingView
     private lateinit var infoPanel: TextView
     private lateinit var loadingPanel: TextView
+    private lateinit var loadingOverlay: FrameLayout
     private val parseExecutor = Executors.newSingleThreadExecutor()
 
-    private val modes = listOf(
-        "长度" to MeasureMode.LENGTH,
-        "连续" to MeasureMode.CONTINUOUS,
-        "面积" to MeasureMode.AREA,
-        "角度" to MeasureMode.ANGLE,
-        "弧长" to MeasureMode.ARC,
-        "半径" to MeasureMode.RADIUS,
-        "坐标" to MeasureMode.COORD,
-    )
-    private val drawTools = listOf(
-        "文字" to MeasureMode.TEXT,
-        "直线" to MeasureMode.LINE,
-        "任意线" to MeasureMode.SKETCH,
-        "云线" to MeasureMode.CLOUD,
-        "引线" to MeasureMode.LEADER,
-        "编号" to MeasureMode.PIN,
-        "照片" to MeasureMode.PHOTO,
-    )
-    private val modeButtons = ArrayList<Button>()
     /** 待关联照片的标注点（照片选择回来后用） */
     private var pendingPhotoPoint: Pair<Double, Double>? = null
 
@@ -56,6 +44,7 @@ class DrawingActivity : AppCompatActivity() {
     private val spaceButtons = ArrayList<Button>()
     private var modelDoc: SkdwDocument? = null
     private val docCache = HashMap<Int, SkdwDocument>()
+    private val measurementsBySpace = HashMap<Int, MutableList<Measurement>>()
 
     // 图层可见性状态（与 modelDoc.layers 对齐；布局文档复用同一图层表）
     private var layerVisible: BooleanArray? = null
@@ -68,11 +57,16 @@ class DrawingActivity : AppCompatActivity() {
     // 底部导航 + 分类工具条（对标竞品结构）
     private lateinit var titleView: TextView
     private lateinit var spaceButton: Button
-    private lateinit var toolScroll: android.widget.HorizontalScrollView
-    private lateinit var toolPanel: LinearLayout
+    private lateinit var actionBar: LinearLayout
+    private lateinit var actionStatus: TextView
+    private lateinit var toolDock: CadToolDockView
+    private lateinit var toolRowScroll: android.widget.HorizontalScrollView
+    private var toolRowView: CadToolRowView? = null
+    private var currentToolLabel = ""
+    private var currentToolHint = ""
     private var activeTab = -1
     private var initialLayerVisible: BooleanArray? = null
-    private val navViews = ArrayList<TextView>()
+    private var lastInteractionResult = ""
 
     @SuppressLint("SetTextI18n")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -82,107 +76,250 @@ class DrawingActivity : AppCompatActivity() {
         title = source.name
         DrawingLibrary.recordOpen(this, source.absolutePath)
 
-        val root = FrameLayout(this)
+        val root = FrameLayout(this).apply {
+            setBackgroundColor(0xFF101318.toInt())
+        }
 
         drawingView = DrawingView(this)
         root.addView(drawingView, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
-        loadingPanel = TextView(this).apply {
-            text = "解析中…"
-            setTextColor(0xFFE6ECF5.toInt())
-            textSize = 15f
-            gravity = Gravity.CENTER
-            setBackgroundColor(0xCC101318.toInt())
-            visibility = View.GONE
-        }
-
-        // 文字/引线输入回调（标注绘制）
-        drawingView.onTextInput = { kind, pos ->
-            runOnUiThread { showAnnotationTextInput(kind, pos) }
-        }
-
-        // 顶栏：返回 | 模型/布局 | 文件名 | 分享（对标竞品）
         val topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(0xE61E2227.toInt())
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(16, 12, 16, 12)
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            background = rounded(0xE61A1E24.toInt(), 16f)
         }
-        val back = Button(this).apply {
-            text = "‹"
-            textSize = 16f
-            setTextColor(0xFFE6ECF5.toInt())
-            setBackgroundColor(Color.TRANSPARENT)
-            setOnClickListener { finish() }
+        val back = compactButton("‹", 24f) { finish() }
+        topBar.addView(back)
+        val titleColumn = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(8), 0, dp(8), 0)
         }
-        topBar.addView(back, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        spaceButton = Button(this).apply {
-            textSize = 13f
-            isAllCaps = false
-            setTextColor(0xFF31D2A0.toInt())
-            setBackgroundColor(Color.TRANSPARENT)
-            visibility = View.GONE
-            setOnClickListener { showSpaceMenu() }
-        }
-        topBar.addView(spaceButton, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         titleView = TextView(this).apply {
             text = source.name
             textSize = 15f
-            setTextColor(0xFFE6ECF5.toInt())
+            setTextColor(0xFFF3F6F8.toInt())
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
         }
-        topBar.addView(titleView, LinearLayout.LayoutParams(
+        titleColumn.addView(titleView)
+        spaceButton = compactButton("模型 ▾", 12f) { showSpaceMenu() }
+        spaceButton.visibility = View.GONE
+        titleColumn.addView(spaceButton)
+        topBar.addView(titleColumn, LinearLayout.LayoutParams(
             0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        val share = Button(this).apply {
-            text = "分享"
-            textSize = 13f
-            isAllCaps = false
-            setTextColor(0xFFC9D2DC.toInt())
-            setBackgroundColor(Color.TRANSPARENT)
-            setOnClickListener { shareScreenshot() }
-        }
-        topBar.addView(share, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        topBar.addView(compactButton("全图", 12f) {
+            drawingView.fitToView(true)
+        })
+        topBar.addView(compactButton("分享", 12f) { shareScreenshot() })
 
-        // 底部信息面板
         infoPanel = TextView(this).apply {
-            text = ""
-            setTextColor(0xFF31D2A0.toInt())
             textSize = 14f
-            setLineSpacing(6f, 1f)
-            setBackgroundColor(0xB3101318.toInt())
-            setPadding(28, 18, 28, 22)
+            setTextColor(0xFFEAEFF3.toInt())
+            setLineSpacing(dp(3).toFloat(), 1f)
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            background = rounded(0xEE202832.toInt(), 14f)
             visibility = View.GONE
+        }
+
+        actionStatus = TextView(this).apply {
+            textSize = 12f
+            setTextColor(0xFFB9C4CE.toInt())
+            setPadding(dp(12), 0, dp(8), 0)
+            maxLines = 2
+        }
+        actionBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(4), dp(4), dp(6), dp(4))
+            background = rounded(0xEE1A2027.toInt(), 14f)
+            visibility = View.GONE
+        }
+        actionBar.addView(actionStatus, LinearLayout.LayoutParams(
+            0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        actionBar.addView(compactButton("退一步", 12f) {
+            drawingView.undoPendingPoint()
+        })
+        actionBar.addView(compactButton("完成", 12f) {
+            drawingView.finishInteraction()
+        })
+        actionBar.addView(compactButton("取消", 12f) {
+            drawingView.cancelInteraction()
+            activeTab = 0
+            refreshDock()
+            actionBar.visibility = View.GONE
+            lastInteractionResult = ""
+            drawingView.refreshInfoPanel()
+        })
+
+        toolDock = CadToolDockView(
+            this,
+            listOf("浏览", "测量", "标注", "图层", "更多"),
+            ::selectDock,
+        )
+
+        val topLayout = FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP,
+        ).apply { setMargins(dp(10), dp(8), dp(10), 0) }
+        root.addView(topBar, topLayout)
+
+        val bottomStack = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(10), 0, dp(10), dp(8))
+        }
+        bottomStack.addView(actionBar, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+        ).apply { bottomMargin = dp(6) })
+        bottomStack.addView(infoPanel, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+        ).apply { bottomMargin = dp(6) })
+        toolRowScroll = android.widget.HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            visibility = View.GONE
+            background = rounded(0xEE202832.toInt(), 14f)
+        }
+        bottomStack.addView(toolRowScroll, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+        ).apply { bottomMargin = dp(6) })
+        bottomStack.addView(toolDock, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+        ))
+        root.addView(bottomStack, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.BOTTOM,
+        ))
+
+        val loadingWrap = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(dp(28), dp(22), dp(28), dp(22))
+            background = rounded(0xF21A2027.toInt(), 18f)
+            addView(android.widget.ProgressBar(this@DrawingActivity))
+        }
+        loadingPanel = TextView(this).apply {
+            text = "正在解析图纸…"
+            setTextColor(0xFFF3F6F8.toInt())
+            textSize = 15f
+            gravity = Gravity.CENTER
+            setPadding(0, dp(12), 0, 0)
+        }
+        loadingWrap.addView(loadingPanel)
+        loadingOverlay = FrameLayout(this).apply {
+            setBackgroundColor(0x66000000)
+            addView(loadingWrap, FrameLayout.LayoutParams(
+                dp(260), ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER,
+            ))
+        }
+        root.addView(loadingOverlay, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT,
+        ))
+        setContentView(root)
+        applySettings()
+        selectDock(0)
+
+        drawingView.onTextInput = { kind, pos ->
+            runOnUiThread { showAnnotationTextInput(kind, pos) }
         }
         drawingView.onMeasurementChanged = { text ->
             runOnUiThread {
-                infoPanel.text = text
-                infoPanel.visibility =
-                    if (text.isEmpty()) View.GONE else View.VISIBLE
+                lastInteractionResult = text
+                if (drawingView.mode == MeasureMode.NONE && !drawingView.isEditingObject) {
+                    infoPanel.text = text
+                    infoPanel.visibility =
+                        if (text.isEmpty()) View.GONE else View.VISIBLE
+                } else {
+                    infoPanel.visibility = View.GONE
+                    if (text.isNotBlank()) {
+                        actionStatus.text = if (drawingView.isEditingObject) {
+                            "编辑标注 · " + text.replace("\n", "，")
+                        } else if (drawingView.pendingPointCount == 0 ||
+                            drawingView.activeInteractionHint.isNotBlank()) {
+                            "$currentToolLabel · " + text.replace("\n", "，")
+                        } else {
+                            actionStatus.text
+                        }
+                    }
+                }
             }
         }
-        // 选择模式点图元 → 显示属性
+        drawingView.onCalibrationRequested = { rawLength ->
+            runOnUiThread { showManualCalibrationInput(rawLength) }
+        }
         drawingView.onEntityPicked = { text ->
             runOnUiThread {
                 if (text.isNullOrEmpty()) {
-                    drawingView.refreshInfoPanel()   // 恢复测量信息
+                    drawingView.refreshInfoPanel()
                 } else {
                     infoPanel.text = text
                     infoPanel.visibility = View.VISIBLE
                 }
             }
         }
-        // 定距标定已按竞品移除（比例在测量面板「比例」里设置）
-        // 编号/照片标注
+        drawingView.onInteractionStateChanged = { currentMode, count ->
+            runOnUiThread {
+                if (currentMode == MeasureMode.NONE) {
+                    actionBar.visibility = View.GONE
+                } else {
+                    activeTab = when (currentMode) {
+                        MeasureMode.TEXT, MeasureMode.LINE, MeasureMode.SKETCH,
+                        MeasureMode.CLOUD, MeasureMode.LEADER,
+                        MeasureMode.PIN, MeasureMode.PHOTO -> 2
+                        else -> 1
+                    }
+                    refreshDock()
+                    actionBar.visibility = View.VISIBLE
+                    infoPanel.visibility = View.GONE
+                    actionStatus.text = if (drawingView.activeInteractionHint.isNotBlank()) {
+                        "$currentToolLabel · " +
+                                drawingView.activeInteractionHint.replace("\n", "，")
+                    } else if (count == 0 && lastInteractionResult.isNotBlank()) {
+                        "$currentToolLabel · " +
+                                lastInteractionResult.replace("\n", "，")
+                    } else if (count == 0) {
+                        "$currentToolLabel · $currentToolHint"
+                    } else {
+                        "$currentToolLabel · 已选 $count 点；拖动控制柄可调整"
+                    }
+                }
+            }
+        }
         drawingView.onPinAdded = { pin ->
             runOnUiThread { showPinNoteDialog(pin) }
         }
         drawingView.onPinTapped = { pin ->
             runOnUiThread { showPinDetail(pin) }
+        }
+        drawingView.onMeasurementTapped = { measurement ->
+            runOnUiThread { showMeasurementActions(measurement) }
+        }
+        drawingView.onAnnotationTapped = { annotation ->
+            runOnUiThread { showAnnotationActions(annotation) }
+        }
+        drawingView.onObjectEditStateChanged = { editing ->
+            runOnUiThread {
+                if (editing) {
+                    activeTab = 0
+                    refreshDock()
+                    infoPanel.visibility = View.GONE
+                    actionBar.visibility = View.VISIBLE
+                    actionStatus.text = "编辑标注 · 拖动控制点，实时重算尺寸"
+                } else {
+                    actionBar.visibility = View.GONE
+                    activeTab = 0
+                    refreshDock()
+                    drawingView.refreshInfoPanel()
+                }
+            }
         }
         drawingView.onPhotoRequested = { world ->
             pendingPhotoPoint = world
@@ -195,60 +332,8 @@ class DrawingActivity : AppCompatActivity() {
                 android.content.Intent.createChooser(intent, "选择照片"), 4201)
         }
 
-        // 分类工具条（底部导航上方，按 tab 切换内容）
-        toolPanel = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(0xE6161A1F.toInt())
-            setPadding(16, 6, 16, 6)
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        toolScroll = android.widget.HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            visibility = View.GONE
-        }
-        toolScroll.addView(toolPanel, ViewGroup.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-
-        // 底部导航（对标竞品五键）：全图 / 测量 / 标注 / 图层 / 工具箱
-        val navItems = listOf("全图" to 0, "测量" to 1, "标注" to 2, "图层" to 3, "工具箱" to 4)
-        val bottomNav = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(0xF21E2227.toInt())
-            setPadding(12, 16, 12, 20)
-        }
-        for ((label, tab) in navItems) {
-            val tv = TextView(this).apply {
-                text = label
-                textSize = 15f
-                gravity = Gravity.CENTER
-                setPadding(0, 12, 0, 12)
-                setOnClickListener { switchTab(tab) }
-            }
-            navViews.add(tv)
-            bottomNav.addView(tv, LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        }
-
-        val topStack = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        topStack.addView(topBar)
-        root.addView(topStack, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-            Gravity.TOP))
-        val bottomStack = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        bottomStack.addView(infoPanel)
-        bottomStack.addView(toolScroll)
-        bottomStack.addView(bottomNav)
-        root.addView(bottomStack, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-            Gravity.BOTTOM))
-        root.addView(loadingPanel, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        setContentView(root)
-        applySettings()
-        toolScroll.visibility = View.GONE   // 默认收起面板（浏览状态）
-
         // 解析（有缓存直接读缓存；缓存版本不符/损坏时重新解析）
-        loadingPanel.visibility = View.VISIBLE
+        loadingOverlay.visibility = View.VISIBLE
         thread {
             val cache = File(source.absolutePath + ".skdw")
             var doc: SkdwDocument? = null
@@ -263,7 +348,7 @@ class DrawingActivity : AppCompatActivity() {
                 if (ok) doc = SkdwDocument.read(cache)
             }
             runOnUiThread {
-                loadingPanel.visibility = View.GONE
+                loadingOverlay.visibility = View.GONE
                 if (doc == null) {
                     Toast.makeText(this, "解析失败：${source.name}", Toast.LENGTH_LONG).show()
                     finish()
@@ -345,101 +430,188 @@ class DrawingActivity : AppCompatActivity() {
             setOnClickListener { onClick() }
         }
 
-    private fun switchTab(tab: Int) {
-        if (tab == 0) {
-            // 全图：适配整个图纸范围（含散落图元），再点一次回主体
-            activeTab = -1
-            refreshNavStyles()
-            toolScroll.visibility = View.GONE
-            drawingView.fitToView(!drawingView.isFittedFull)
+    private fun dp(value: Int): Int =
+        (value * resources.displayMetrics.density).toInt()
+
+    private fun rounded(color: Int, radiusDp: Float): GradientDrawable =
+        GradientDrawable().apply {
+            setColor(color)
+            cornerRadius = dp(radiusDp.toInt()).toFloat()
+        }
+
+    private fun compactButton(label: String, sizeSp: Float,
+                              onClick: () -> Unit): Button =
+        Button(this).apply {
+            text = label
+            textSize = sizeSp
+            isAllCaps = false
+            minWidth = 0
+            minimumWidth = 0
+            minHeight = 0
+            minimumHeight = 0
+            setPadding(dp(8), dp(4), dp(8), dp(4))
+            setTextColor(0xFFE9EEF2.toInt())
+            setBackgroundColor(Color.TRANSPARENT)
+            setOnClickListener { onClick() }
+        }
+
+    private fun refreshDock() {
+        if (::toolDock.isInitialized) toolDock.selectedIndex = activeTab
+    }
+
+    private fun selectDock(tab: Int) {
+        if (tab in setOf(1, 2, 4) && tab == activeTab &&
+            toolRowScroll.visibility == View.VISIBLE) {
+            hideToolRow()
             return
         }
-        activeTab = if (activeTab == tab) -1 else tab
-        refreshNavStyles()
-        when (activeTab) {
+        activeTab = tab
+        refreshDock()
+        when (tab) {
+            0 -> {
+                currentToolLabel = "浏览"
+                currentToolHint = ""
+                drawingView.cancelInteraction()
+                actionBar.visibility = View.GONE
+                hideToolRow()
+            }
             1 -> showMeasurePanel()
             2 -> showDrawPanel()
-            3 -> {
-                toolScroll.visibility = View.GONE
-                showLayerDialog()
-            }
+            3 -> showLayerDialog()
             4 -> showToolPanel()
-            else -> toolScroll.visibility = View.GONE
         }
     }
 
-    private fun refreshNavStyles() {
-        for ((i, tv) in navViews.withIndex()) {
-            tv.setTextColor(if (i == activeTab) 0xFF31D2A0.toInt()
-            else 0xFFC9D2DC.toInt())
-        }
+    private fun activateTool(label: String, hint: String, mode: MeasureMode) {
+        currentToolLabel = label
+        currentToolHint = hint
+        lastInteractionResult = ""
+        drawingView.setMode(mode)
+        actionBar.visibility = View.VISIBLE
+        actionStatus.text = "$label · $hint"
     }
 
-    private fun swapPanel(buttons: List<Button>) {
-        toolPanel.removeAllViews()
-        for (b in buttons) toolPanel.addView(b, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        toolScroll.visibility = View.VISIBLE
+    private fun showToolSheet(
+        title: String,
+        subtitle: String,
+        items: List<Pair<String, () -> Unit>>,
+    ) {
+        toolRowScroll.removeAllViews()
+        val view = CadToolRowView(this, items.map { it.first }) { index ->
+            hideToolRow()
+            items.getOrNull(index)?.second?.invoke()
+        }
+        toolRowView = view
+        toolRowScroll.addView(view, ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+        ))
+        toolRowScroll.visibility = View.VISIBLE
+        toolRowScroll.post { toolRowScroll.scrollTo(0, 0) }
+        view.contentDescription = "$title：$subtitle"
+    }
+
+    private fun hideToolRow() {
+        if (::toolRowScroll.isInitialized) toolRowScroll.visibility = View.GONE
     }
 
     private fun showMeasurePanel() {
-        modeButtons.clear()
-        val buttons = ArrayList<Button>()
-        for ((label, mode) in modes) {
-            val btn = toolButton(label) {
-                drawingView.setMode(mode)
-                refreshToolbar()
-            }
-            modeButtons.add(btn)
-            buttons.add(btn)
-        }
-        buttons.add(toolButton("比例") { showScaleDialog() })
-        swapPanel(buttons)
-        refreshToolbar()
+        showToolSheet(
+            "测量",
+            "单指拖动准星选点，松开确认；双指平移/缩放；靠近已选点可拖动调整。",
+            listOf(
+                "长度" to {
+                    activateTool("长度", "选择两个点", MeasureMode.LENGTH)
+                },
+                "连续" to {
+                    activateTool("连续", "连续选点，点“完成”结束", MeasureMode.CONTINUOUS)
+                },
+                "面积" to {
+                    activateTool("面积", "沿边界选点，点“完成”闭合", MeasureMode.AREA)
+                },
+                "角度" to {
+                    activateTool("角度", "依次点两条线段，再点文字落点", MeasureMode.ANGLE)
+                },
+                "弧长" to {
+                    activateTool("弧长", "点击目标圆弧", MeasureMode.ARC)
+                },
+                "半径" to {
+                    activateTool("半径", "点击目标圆或圆弧", MeasureMode.RADIUS)
+                },
+                "比例校准" to { showScaleDialog() },
+            ),
+        )
     }
 
-    /** 标注绘制面板：文字/直线/任意线/云线/引线/编号/照片 */
+    /** 移动端只保留文字标注和标注管理。 */
     private fun showDrawPanel() {
-        val buttons = ArrayList<Button>()
-        for ((label, mode) in drawTools) {
-            buttons.add(toolButton(label) {
-                drawingView.setMode(mode)
-                refreshToolbar()
-                Toast.makeText(this, when (mode) {
-                    MeasureMode.TEXT -> "点击图纸放置文字"
-                    MeasureMode.LINE -> "点击两点绘制直线"
-                    MeasureMode.SKETCH -> "按住拖动绘制任意线"
-                    MeasureMode.CLOUD -> "点击多个点绘制云线，靠近起点闭合"
-                    MeasureMode.LEADER -> "点击箭头端和文字端"
-                    MeasureMode.PIN -> "点击图纸放置编号标注"
-                    MeasureMode.PHOTO -> "点击图纸位置，再选照片"
-                    else -> ""
-                }, Toast.LENGTH_SHORT).show()
-            })
-        }
-        swapPanel(buttons)
-        refreshToolbar()
+        showToolSheet(
+            "标注",
+            "只保留文字标注；测量和文字标注统一在标注管理中维护。",
+            listOf(
+                "文字标注" to {
+                    activateTool("文字标注", "拖动准星定位，松开后输入文字", MeasureMode.TEXT)
+                },
+                "标注管理" to { showPinListDialog() },
+            ),
+        )
     }
 
     private fun showToolPanel() {
         val bgDark = getSharedPreferences("skdw_settings",
             Context.MODE_PRIVATE).getBoolean("bg_dark", true)
-        swapPanel(listOf(
-            toolButton("文字查找") { showTextFindDialog() },
-            toolButton("提取文字") { showExtractTextDialog() },
-            toolButton(if (bgDark) "白底显示" else "黑底显示") {
-                val prefs = getSharedPreferences("skdw_settings", Context.MODE_PRIVATE)
-                prefs.edit().putBoolean("bg_dark", !bgDark).apply()
-                drawingView.lightBackground = bgDark
-                showToolPanel()   // 刷新按钮文字
+        showToolSheet(
+            "更多",
+            "按需使用；测量颜色和背景会立即应用。",
+            listOf(
+                "文字查找" to { showTextFindDialog() },
+                "提取文字" to { showExtractTextDialog() },
+                (if (bgDark) "白底显示" else "黑底显示") to {
+                    getSharedPreferences("skdw_settings", Context.MODE_PRIVATE)
+                        .edit().putBoolean("bg_dark", !bgDark).apply()
+                    drawingView.lightBackground = bgDark
+                    showToolPanel()
+                },
+                "测量颜色" to { showMeasureColorSheet() },
+                "分享截图" to { shareScreenshot() },
+                "清除测量" to {
+                    AlertDialog.Builder(this)
+                        .setTitle("清除测量")
+                        .setMessage("删除当前空间的所有测量结果？")
+                        .setPositiveButton("清除") { _, _ ->
+                            drawingView.clearMeasurements()
+                            captureCurrentMeasurements()
+                            savePins()
+                            drawingView.cancelInteraction()
+                            actionBar.visibility = View.GONE
+                        }
+                        .setNegativeButton("取消", null)
+                        .show()
+                },
+            ),
+        )
+    }
+
+    private fun showMeasureColorSheet() {
+        val colors = listOf(
+            "绿色" to 0xFF31D2A0.toInt(),
+            "黄色" to 0xFFFFC94D.toInt(),
+            "青色" to 0xFF54D7FF.toInt(),
+            "橙色" to 0xFFFF9B58.toInt(),
+            "红色" to 0xFFFF6B6B.toInt(),
+            "白色" to 0xFFF2F5F7.toInt(),
+        )
+        showToolSheet(
+            "测量颜色",
+            "同时应用于尺寸线、结果文字和点控制柄。",
+            colors.map { (name, color) ->
+                name to {
+                    drawingView.measureColor = color
+                    getSharedPreferences("skdw_settings", Context.MODE_PRIVATE)
+                        .edit().putInt("measure_color", color).apply()
+                }
             },
-            toolButton("标注列表") { showPinListDialog() },
-            toolButton("清除标注", 0xFFFF8A8A.toInt()) {
-                drawingView.clearMeasurements()
-                drawingView.setMode(MeasureMode.NONE)
-                Toast.makeText(this, "已清除测量标注", Toast.LENGTH_SHORT).show()
-            }
-        ))
+        )
     }
 
     /** 模型/布局切换菜单（顶栏按钮） */
@@ -532,34 +704,83 @@ class DrawingActivity : AppCompatActivity() {
             .show()
     }
 
-    /** 测量比例设置（1:1 / 1:10 / 1:100 / 自定义，按图纸记忆） */
+    /** 自动识别，或按 PC 端方式拾取已知长度的两个端点。 */
     private fun showScaleDialog() {
         val cur = drawingView.unitScale
-        val opts = listOf("1:1（原始单位）", "1:10", "1:100", "1:500", "1:1000", "自定义…")
-        val vals = doubleArrayOf(1.0, 10.0, 100.0, 500.0, 1000.0)
+        val opts = listOf("自动识别图纸比例", "手动拾取两点校准", "恢复 1:1")
         AlertDialog.Builder(this)
-            .setTitle("测量比例（当前 ${if (cur == 1.0) "1:1" else "×${cur}"}）")
+            .setTitle("比例校准（当前 ${if (cur == 1.0) "1:1" else "×$cur"}）")
             .setItems(opts.toTypedArray()) { _, which ->
-                if (which == 5) {
-                    val et = android.widget.EditText(this).apply {
-                        hint = "输入比例系数，如 100 或 0.001"
-                        setSingleLine(true)
-                        inputType = android.text.InputType.TYPE_CLASS_NUMBER or
-                                android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
-                        setPadding(48, 40, 48, 0)
-                    }
-                    AlertDialog.Builder(this)
-                        .setTitle("自定义比例")
-                        .setView(et)
-                        .setPositiveButton("确定") { _, _ ->
-                            et.text.toString().toDoubleOrNull()
-                                ?.takeIf { it > 0 }?.let { setScale(it) }
-                        }
-                        .setNegativeButton("取消", null)
-                        .show()
-                } else setScale(vals[which])
+                when (which) {
+                    0 -> performAutoCalibration()
+                    1 -> activateTool(
+                        "校准比例",
+                        "选择已知长度的两个端点",
+                        MeasureMode.CALIBRATE,
+                    )
+                    else -> setScale(1.0)
+                }
             }
             .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun performAutoCalibration() {
+        loadingPanel.text = "正在识别原图尺寸…"
+        loadingOverlay.visibility = View.VISIBLE
+        parseExecutor.execute {
+            val result = drawingView.inferAutoCalibration()
+            runOnUiThread {
+                loadingOverlay.visibility = View.GONE
+                if (result == null) {
+                    Toast.makeText(
+                        this,
+                        "未找到足够一致的尺寸样本，请使用手动校准",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                } else {
+                    setScale(result.scale)
+                    Toast.makeText(
+                        this,
+                        "自动校准完成：×%.4f（%d 个尺寸样本）"
+                            .format(result.scale, result.samples),
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+            }
+        }
+    }
+
+    private fun showManualCalibrationInput(rawLength: Double) {
+        val input = android.widget.EditText(this).apply {
+            hint = "输入图纸上标注的已知长度"
+            setSingleLine(true)
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER or
+                    android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+        }
+        AlertDialog.Builder(this)
+            .setTitle("手动校准")
+            .setMessage("拾取长度：%.3f\n请输入原图标注的已知长度：".format(rawLength))
+            .setView(input)
+            .setPositiveButton("应用") { _, _ ->
+                val known = input.text.toString().toDoubleOrNull()
+                if (known != null && known > 0.0) {
+                    setScale(known / rawLength)
+                } else {
+                    Toast.makeText(this, "请输入大于 0 的长度", Toast.LENGTH_SHORT).show()
+                }
+                drawingView.setMode(MeasureMode.NONE)
+                actionBar.visibility = View.GONE
+                activeTab = 0
+                refreshDock()
+            }
+            .setNegativeButton("取消") { _, _ ->
+                drawingView.cancelInteraction()
+                actionBar.visibility = View.GONE
+                activeTab = 0
+                refreshDock()
+            }
             .show()
     }
 
@@ -612,22 +833,154 @@ class DrawingActivity : AppCompatActivity() {
             .show()
     }
 
-    /** 标注列表：点击定位，长按详情 */
+    private fun showMeasurementActions(measurement: Measurement) {
+        val actions = arrayOf("修改端点", "删除标注")
+        AlertDialog.Builder(this)
+            .setTitle(measurement.label(drawingView.unitScale).replace("\n", "，"))
+            .setItems(actions) { _, which ->
+                when (which) {
+                    0 -> drawingView.beginMeasurementEdit(measurement)
+                    else -> confirmDeleteMeasurement(measurement)
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun showAnnotationActions(annotation: Annotation) {
+        val kind = when (annotation.kind) {
+            MeasureMode.TEXT -> "文字"
+            MeasureMode.LINE -> "直线"
+            MeasureMode.SKETCH -> "任意线"
+            MeasureMode.CLOUD -> "云线"
+            MeasureMode.LEADER -> "引线"
+            else -> "标注"
+        }
+        val editAction = if (annotation.kind == MeasureMode.TEXT) "修改位置" else "修改端点"
+        val actions = arrayOf(editAction, "删除标注")
+        AlertDialog.Builder(this)
+            .setTitle("$kind${annotation.text.takeIf { it.isNotBlank() }?.let { " · $it" } ?: ""}")
+            .setItems(actions) { _, which ->
+                when (which) {
+                    0 -> drawingView.beginAnnotationEdit(annotation)
+                    else -> confirmDeleteAnnotation(annotation)
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun confirmDeleteMeasurement(measurement: Measurement) {
+        AlertDialog.Builder(this)
+            .setTitle("删除测量")
+            .setMessage(measurement.label(drawingView.unitScale).replace("\n", "，") +
+                    "\n\n删除后不可恢复。")
+            .setPositiveButton("删除") { _, _ ->
+                drawingView.removeMeasurement(measurement)
+                captureCurrentMeasurements()
+                savePins()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun confirmDeleteAnnotation(annotation: Annotation) {
+        AlertDialog.Builder(this)
+            .setTitle("删除标注")
+            .setMessage("删除后不可恢复。")
+            .setPositiveButton("删除") { _, _ ->
+                drawingView.removeAnnotation(annotation)
+                savePins()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    /** 标注明细：统一管理测量、文字/手绘标注和编号/照片标注。 */
     private fun showPinListDialog() {
-        val pins = drawingView.pins
-        if (pins.isEmpty()) {
-            Toast.makeText(this, "暂无编号/照片标注", Toast.LENGTH_SHORT).show()
+        data class Entry(
+            val label: String,
+            val locate: () -> Unit,
+            val detail: (() -> Unit)?,
+            val delete: () -> Unit,
+        )
+        val entries = ArrayList<Entry>()
+        for (m in drawingView.measurements.asReversed()) {
+            entries.add(Entry(
+                "测量 · " + m.label(drawingView.unitScale).replace("\n", "，"),
+                { m.points.firstOrNull()?.let { drawingView.centerOn(it.first, it.second) } },
+                null,
+                { drawingView.removeMeasurement(m) },
+            ))
+        }
+        for (a in drawingView.annotations.asReversed()) {
+            val kind = when (a.kind) {
+                MeasureMode.TEXT -> "文字"
+                MeasureMode.LINE -> "直线"
+                MeasureMode.SKETCH -> "任意线"
+                MeasureMode.CLOUD -> "云线"
+                MeasureMode.LEADER -> "引线"
+                else -> "标注"
+            }
+            val summary = a.text.take(24).ifBlank { kind }
+            entries.add(Entry(
+                "$kind · $summary",
+                { a.points.firstOrNull()?.let { drawingView.centerOn(it.first, it.second) } },
+                null,
+                { drawingView.removeAnnotation(a) },
+            ))
+        }
+        for (p in drawingView.pins.asReversed()) {
+            entries.add(Entry(
+                "#${p.id} ${if (p.photoPath != null) "照片 " else ""}${p.note.take(22)}",
+                { drawingView.centerOnPin(p) },
+                { showPinDetail(p) },
+                { drawingView.removePin(p) },
+            ))
+        }
+        if (entries.isEmpty()) {
+            Toast.makeText(this, "暂无测量或标注", Toast.LENGTH_SHORT).show()
             return
         }
-        val labels = pins.map {
-            "#${it.id} ${if (it.photoPath != null) "📷 " else ""}${it.note.take(20)}"
-        }.toTypedArray()
+        val labels = entries.map { it.label }.toTypedArray()
         AlertDialog.Builder(this)
-            .setTitle("标注（${pins.size}）")
-            .setItems(labels) { _, which -> drawingView.centerOnPin(pins[which]) }
+            .setTitle("标注明细（${entries.size}）")
+            .setItems(labels) { _, which ->
+                val entry = entries[which]
+                val actions = if (entry.detail != null) {
+                    arrayOf("查看详情", "定位", "删除")
+                } else {
+                    arrayOf("定位", "删除")
+                }
+                AlertDialog.Builder(this)
+                    .setTitle(entry.label)
+                    .setItems(actions) { _, action ->
+                        when (actions[action]) {
+                            "查看详情" -> entry.detail?.invoke()
+                            "定位" -> entry.locate()
+                            "删除" -> {
+                                entry.delete()
+                                captureCurrentMeasurements()
+                                savePins()
+                            }
+                        }
+                    }
+                    .setNegativeButton("取消", null)
+                    .show()
+            }
             .setPositiveButton("全部清除") { _, _ ->
-                drawingView.clearPins()
-                savePins()
+                AlertDialog.Builder(this)
+                    .setTitle("全部清除")
+                    .setMessage("清除当前图纸的测量、文字/手绘标注和编号/照片标注？")
+                    .setPositiveButton("清除") { _, _ ->
+                        drawingView.clearMeasurements()
+                        drawingView.clearAnnotations()
+                        drawingView.clearPins()
+                        captureCurrentMeasurements()
+                        savePins()
+                    }
+                    .setNegativeButton("取消", null)
+                    .show()
             }
             .setNeutralButton("关闭", null)
             .show()
@@ -719,6 +1072,7 @@ class DrawingActivity : AppCompatActivity() {
 
     private fun savePins() {
         try {
+            captureCurrentMeasurements()
             val arr = org.json.JSONArray()
             for (p in drawingView.pins) arr.put(org.json.JSONObject().apply {
                 put("id", p.id); put("x", p.x); put("y", p.y)
@@ -731,6 +1085,24 @@ class DrawingActivity : AppCompatActivity() {
                 for (pt in a.points) { pts.put(pt.first); pts.put(pt.second) }
                 put("pts", pts)
             })
+            for ((space, items) in measurementsBySpace.toSortedMap()) {
+                for (m in items) arr.put(org.json.JSONObject().apply {
+                    put("measure", 1)
+                    put("space", space)
+                    put("kind", m.kind.name)
+                    val pts = org.json.JSONArray()
+                    for (pt in m.points) { pts.put(pt.first); pts.put(pt.second) }
+                    put("pts", pts)
+                    val edges = org.json.JSONArray()
+                    for (edge in m.edgeLengths) edges.put(edge)
+                    put("edges", edges)
+                    put("total", m.total)
+                    put("area", m.area)
+                    put("perimeter", m.perimeter)
+                    put("radius", m.radius)
+                    put("extra", m.extra)
+                })
+            }
             notesFile().writeText(arr.toString())
         } catch (_: Exception) {}
     }
@@ -742,11 +1114,44 @@ class DrawingActivity : AppCompatActivity() {
             val arr = org.json.JSONArray(f.readText())
             drawingView.pins.clear()
             drawingView.annotations.clear()
+            measurementsBySpace.clear()
             var maxId = 0
             var maxAnnoId = 0
             for (i in 0 until arr.length()) {
                 val o = arr.getJSONObject(i)
-                if (o.optInt("anno") == 1) {
+                if (o.optInt("measure") == 1) {
+                    val kind = try { MeasureMode.valueOf(o.getString("kind")) }
+                               catch (_: Exception) { MeasureMode.LENGTH }
+                    fun readPoints(key: String = "pts"): List<Pair<Double, Double>> {
+                        val values = o.optJSONArray(key) ?: return emptyList()
+                        val result = ArrayList<Pair<Double, Double>>()
+                        var k = 0
+                        while (k + 1 < values.length()) {
+                            result.add(Pair(values.optDouble(k), values.optDouble(k + 1)))
+                            k += 2
+                        }
+                        return result
+                    }
+                    val edgesArr = o.optJSONArray("edges")
+                    val edges = ArrayList<Double>()
+                    if (edgesArr != null) {
+                        for (k in 0 until edgesArr.length()) {
+                            edges.add(edgesArr.optDouble(k))
+                        }
+                    }
+                    val measurement = Measurement(
+                        kind,
+                        readPoints(),
+                        edges,
+                        o.optDouble("total"),
+                        o.optDouble("area"),
+                        o.optDouble("perimeter"),
+                        o.optDouble("radius"),
+                        o.optString("extra"),
+                    )
+                    val space = o.optInt("space", 0).coerceAtLeast(0)
+                    measurementsBySpace.getOrPut(space) { ArrayList() }.add(measurement)
+                } else if (o.optInt("anno") == 1) {
                     val id = o.optInt("id", i + 1)
                     if (id > maxAnnoId) maxAnnoId = id
                     val kind = try { MeasureMode.valueOf(o.getString("kind")) }
@@ -772,6 +1177,10 @@ class DrawingActivity : AppCompatActivity() {
             }
             drawingView.setNextPinId(maxId + 1)
             drawingView.setNextAnnoId(maxAnnoId + 1)
+            if (currentSpace == 0) {
+                drawingView.setMeasurements(
+                    measurementsBySpace[0]?.toList().orEmpty())
+            }
             drawingView.invalidate()
         } catch (_: Exception) {}
     }
@@ -822,6 +1231,9 @@ class DrawingActivity : AppCompatActivity() {
     /** 切换模型/布局；布局文档懒加载 */
     private fun switchSpace(index: Int) {
         if (index < 0 || index >= spaces.size) return
+        if (index != currentSpace && drawingView.document != null) {
+            captureCurrentMeasurements()
+        }
         currentSpace = index
         refreshSpaceBar()
         val cached = docCache[index]
@@ -831,11 +1243,11 @@ class DrawingActivity : AppCompatActivity() {
         }
         val file = spaces[index].file ?: return
         loadingPanel.text = "加载${spaces[index].name}…"
-        loadingPanel.visibility = View.VISIBLE
+        loadingOverlay.visibility = View.VISIBLE
         thread {
             val doc = SkdwDocument.read(file)
             runOnUiThread {
-                loadingPanel.visibility = View.GONE
+                loadingOverlay.visibility = View.GONE
                 if (doc != null) {
                     docCache[index] = doc
                     if (currentSpace == index) applySpace(index, doc)
@@ -852,11 +1264,20 @@ class DrawingActivity : AppCompatActivity() {
         drawingView.load(doc)
         // 布局页把模型空间文档设为视口内容来源；模型页清空
         drawingView.setOverlay(if (index == 0) null else modelDoc)
+        drawingView.setMeasurements(
+            measurementsBySpace[index]?.toList().orEmpty())
         if (index == pendingRestoreSpace) {
             pendingRestore?.let { drawingView.restoreView(it.first, it.second, it.third) }
             pendingRestore = null
             pendingRestoreSpace = -1
         }
+    }
+
+    /** 模型空间和每张布局分别保存自己的测量记录。 */
+    private fun captureCurrentMeasurements() {
+        if (drawingView.document == null) return
+        measurementsBySpace[currentSpace] =
+            ArrayList(drawingView.measurements)
     }
 
     // ---- 视图记忆 ----
@@ -992,7 +1413,8 @@ class DrawingActivity : AppCompatActivity() {
 
     /** 图层面板：点击切换显隐，长按仅显示该层 */
     @SuppressLint("SetTextI18n")
-    private fun showLayerDialog() {
+    @Suppress("unused")
+    private fun showLegacyLayerDialog() {
         val doc = modelDoc ?: return
         val lv = layerVisible ?: return
         val counts = IntArray(doc.layers.size)
@@ -1130,12 +1552,155 @@ class DrawingActivity : AppCompatActivity() {
         dialog.show()
     }
 
-    private fun refreshToolbar() {
-        for ((i, btn) in modeButtons.withIndex()) {
-            val active = modes.getOrNull(i)?.second == drawingView.mode
-            btn.setTextColor(
-                if (active) 0xFF31D2A0.toInt() else 0xFFC9D2DC.toInt())
+    private fun showLayerDialog() {
+        val doc = modelDoc ?: return
+        val lv = layerVisible ?: return
+        val counts = IntArray(doc.layers.size)
+        for (entity in doc.entities) {
+            if (entity.layer in counts.indices) counts[entity.layer]++
         }
+
+        val dialog = BottomSheetDialog(this)
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(10), dp(18), dp(24))
+            background = rounded(0xFFF7F9FA.toInt(), 20f)
+        }
+        panel.addView(View(this).apply {
+            background = rounded(0xFFD2D9DE.toInt(), 3f)
+        }, LinearLayout.LayoutParams(dp(42), dp(5)).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+            bottomMargin = dp(14)
+        })
+        panel.addView(TextView(this).apply {
+            text = "图层"
+            textSize = 20f
+            setTextColor(0xFF17232B.toInt())
+        })
+        panel.addView(TextView(this).apply {
+            text = "点击开关显隐；长按图层名称可仅显示该层。"
+            textSize = 13f
+            setTextColor(0xFF6C7A84.toInt())
+            setPadding(0, dp(4), 0, dp(12))
+        })
+
+        val actions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+        }
+        fun actionButton(label: String, action: () -> Unit): MaterialButton =
+            MaterialButton(this).apply {
+                text = label
+                textSize = 13f
+                isAllCaps = false
+                cornerRadius = dp(10)
+                minHeight = dp(42)
+                setBackgroundColor(0xFFE8F1F4.toInt())
+                setTextColor(0xFF164256.toInt())
+                setOnClickListener {
+                    action()
+                    dialog.dismiss()
+                }
+            }
+        actions.addView(actionButton("全开") {
+            for (i in lv.indices) lv[i] = true
+            syncLayerVisibility()
+        }, LinearLayout.LayoutParams(0, dp(44), 1f).apply {
+            marginEnd = dp(6)
+        })
+        actions.addView(actionButton("全关") {
+            for (i in lv.indices) lv[i] = false
+            syncLayerVisibility()
+        }, LinearLayout.LayoutParams(0, dp(44), 1f).apply {
+            marginEnd = dp(6)
+        })
+        actions.addView(actionButton("恢复初始") {
+            initialLayerVisible?.let { initial ->
+                for (i in lv.indices) lv[i] = initial[i]
+            }
+            syncLayerVisibility()
+        }, LinearLayout.LayoutParams(0, dp(44), 1f))
+        panel.addView(actions)
+
+        val list = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(8), 0, 0)
+        }
+        for (i in doc.layers.indices) {
+            val layer = doc.layers[i]
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(8), dp(9), dp(8), dp(9))
+            }
+            row.addView(TextView(this).apply {
+                text = "●"
+                textSize = 14f
+                val r = (layer.argb shr 16) and 0xff
+                val g = (layer.argb shr 8) and 0xff
+                val b = layer.argb and 0xff
+                setTextColor(
+                    if (r > 225 && g > 225 && b > 225) 0xFF7D8992.toInt()
+                    else layer.argb)
+            })
+            row.addView(TextView(this).apply {
+                text = layer.name
+                textSize = 14f
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setTextColor(if (lv[i]) 0xFF263640.toInt() else 0xFF9AA4AB.toInt())
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginStart = dp(8)
+            })
+            row.addView(TextView(this).apply {
+                text = counts[i].toString()
+                textSize = 11f
+                setTextColor(0xFF8C99A2.toInt())
+                setPadding(dp(6), 0, dp(8), 0)
+            })
+            row.addView(Switch(this).apply {
+                isChecked = lv[i]
+                setOnCheckedChangeListener { _, checked ->
+                    lv[i] = checked
+                    syncLayerVisibility()
+                }
+            })
+            row.setOnLongClickListener {
+                for (j in lv.indices) lv[j] = j == i
+                syncLayerVisibility()
+                dialog.dismiss()
+                Toast.makeText(this, "仅显示「${layer.name}」", Toast.LENGTH_SHORT).show()
+                true
+            }
+            list.addView(row)
+        }
+        val scroll = ScrollView(this).apply { addView(list) }
+        panel.addView(scroll, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            minOf(
+                dp(520),
+                dp(56) * doc.layers.size + dp(16),
+                (resources.displayMetrics.heightPixels * 0.58f).toInt(),
+            ),
+        ))
+        dialog.setContentView(panel)
+        dialog.setOnShowListener {
+            dialog.behavior.state = BottomSheetBehavior.STATE_EXPANDED
+            dialog.behavior.skipCollapsed = true
+        }
+        dialog.show()
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (drawingView.mode != MeasureMode.NONE) {
+            drawingView.cancelInteraction()
+            actionBar.visibility = View.GONE
+            activeTab = 0
+            refreshDock()
+            drawingView.refreshInfoPanel()
+            return
+        }
+        super.onBackPressed()
     }
 
     override fun onDestroy() {
