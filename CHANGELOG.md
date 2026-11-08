@@ -13,6 +13,8 @@
 - 命令系统支持标准化英文命令，并覆盖测量、文字注释、删除和校准。
 - 正式标注、自动恢复、缓存和最近记录采用明确的生命周期与目录策略。
 - Windows 发布自包含 x64 portable ZIP，macOS 发布 Universal DMG 与 PKG。
+- 新增 Android arm64 核心移植：DWG/DXF 原生解析、SKDW 缓存、布局、图层、
+  外部参照、测量和标注；PDF 尚未移植。
 
 ### 优化
 
@@ -34,4 +36,5 @@
 - macOS App 与 PDFium 均为 `x86_64 + arm64`，最低支持 macOS 12。
 - Windows 为 x64，PE Subsystem `6.0`，核心 DWG/DXF 库静态链接。
 - 全量自动测试 `3/3` 通过。
+- Android 设备测试 `2/2` 通过，覆盖共享几何和 DXF 原生管线。
 - macOS 使用 ad-hoc hardened runtime；PKG 未做 Developer ID 签名和 Apple 公证。
