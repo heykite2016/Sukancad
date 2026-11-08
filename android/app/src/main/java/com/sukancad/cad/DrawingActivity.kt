@@ -507,7 +507,13 @@ class DrawingActivity : AppCompatActivity() {
             ViewGroup.LayoutParams.WRAP_CONTENT,
         ))
         toolRowScroll.visibility = View.VISIBLE
-        toolRowScroll.post { toolRowScroll.scrollTo(0, 0) }
+        toolRowScroll.post {
+            val totalWidth = items.size * dp(100)
+            view.minimumWidth =
+                maxOf(totalWidth, toolRowScroll.width)
+            view.requestLayout()
+            toolRowScroll.scrollTo(0, 0)
+        }
         view.contentDescription = "$title：$subtitle"
     }
 

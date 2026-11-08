@@ -967,40 +967,6 @@ int main(int argc, char *argv[])
         return fail("circle measurement did not draw the circular arc");
     }
 
-    CadView lineDistanceView;
-    lineDistanceView.resize(900, 700);
-    lineDistanceView.setDocument(document);
-    lineDistanceView.fitToDrawing();
-    const auto lineDistanceScreenAt = [&](const QPointF &world) {
-        const QSizeF viewport(lineDistanceView.size());
-        return QPointF(
-            viewport.width() * 0.5
-                + (world.x() - lineDistanceView.viewCenter().x())
-                    * lineDistanceView.zoomScale(),
-            viewport.height() * 0.5
-                - (world.y() - lineDistanceView.viewCenter().y())
-                    * lineDistanceView.zoomScale());
-    };
-    lineDistanceView.beginTool(CadView::ToolMode::PointToLine);
-    mouseClick(
-        lineDistanceView,
-        lineDistanceScreenAt(QPointF(300.0, 200.0)));
-    mouseClick(
-        lineDistanceView,
-        lineDistanceScreenAt(QPointF(700.0, 400.0)));
-    mouseClick(
-        lineDistanceView,
-        lineDistanceScreenAt(QPointF(600.0, 250.0)));
-    if (lineDistanceView.measurements().size() != 1) {
-        return fail("point-to-line entity selection failed");
-    }
-    const Measurement &pointToLine =
-        lineDistanceView.measurements().first();
-    if (pointToLine.points.size() != 3
-        || !near(pointToLine.rawLength(), 200.0)) {
-        return fail("point-to-line perpendicular distance is incorrect");
-    }
-
     auto circleDocument = std::make_shared<CadDocument>();
     circleDocument->path = QStringLiteral("circle.dxf");
     circleDocument->fileName = QStringLiteral("circle.dxf");
@@ -1571,9 +1537,7 @@ int main(int argc, char *argv[])
             && view.measurements().last().type == expected;
     };
     if (!runTwoPointTool(CadView::ToolMode::Aligned,
-                         MeasurementType::Aligned)
-        || !runTwoPointTool(CadView::ToolMode::Diameter,
-                            MeasurementType::Diameter)) {
+                         MeasurementType::Aligned)) {
         return fail("two-point measurement tool failed");
     }
 
@@ -1606,39 +1570,6 @@ int main(int argc, char *argv[])
                 != MeasurementType::ArcLength) {
             return fail("arc length measurement failed");
         }
-    }
-    {
-        const int before = view.measurements().size();
-        view.beginTool(CadView::ToolMode::Coordinate);
-        mouseClick(view, QPointF(420.0, 420.0));
-        mouseClick(view, QPointF(500.0, 380.0));
-        if (view.measurements().size() != before + 1
-            || view.measurements().last().type
-                != MeasurementType::Coordinate) {
-            return fail("coordinate measurement failed");
-        }
-    }
-    {
-        const int before = view.measurements().size();
-        view.beginTool(CadView::ToolMode::PointToLine);
-        mouseClick(view, QPointF(300.0, 300.0));
-        mouseClick(view, QPointF(400.0, 470.0));
-        mouseClick(view, QPointF(700.0, 500.0));
-        mouseClick(view, QPointF(560.0, 360.0));
-        if (view.measurements().size() != before + 1
-            || view.measurements().last().type
-                != MeasurementType::PointToLine) {
-            return fail("point-to-line measurement failed");
-        }
-    }
-    view.beginTool(CadView::ToolMode::FixedDistance, 100.0);
-    mouseClick(view, QPointF(180.0, 180.0));
-    mouseClick(view, QPointF(520.0, 260.0));
-    mouseClick(view, QPointF(430.0, 240.0));
-    if (view.measurements().last().type
-            != MeasurementType::FixedDistance
-        || view.measurements().last().rawLength() <= 0.0) {
-        return fail("fixed-distance measurement failed");
     }
     {
         const int before = view.measurements().size();
@@ -1728,22 +1659,6 @@ int main(int argc, char *argv[])
             }
         }
     }
-    {
-        const int before = view.measurements().size();
-        view.beginTool(CadView::ToolMode::AreaOffset, 20.0);
-        mouseClick(view, QPointF(190.0, 210.0));
-        mouseClick(view, QPointF(500.0, 210.0));
-        mouseClick(view, QPointF(500.0, 450.0));
-        view.finishCurrentMeasurement();
-        mouseClick(view, QPointF(400.0, 330.0));
-        if (view.measurements().size() != before + 1
-            || view.measurements().last().type
-                != MeasurementType::AreaOffset
-            || view.measurements().last().rawArea() <= 0.0) {
-            return fail("offset-area measurement failed");
-        }
-    }
-
     CadEntity filledBoundary;
     filledBoundary.type = CadEntityType::Polyline;
     filledBoundary.layer = layer.name;

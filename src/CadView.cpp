@@ -46,10 +46,8 @@ bool isDimensionMeasurement(MeasurementType type)
     case MeasurementType::Continuous:
     case MeasurementType::Batch:
     case MeasurementType::Radius:
-    case MeasurementType::Diameter:
     case MeasurementType::Angle:
     case MeasurementType::ArcLength:
-    case MeasurementType::FixedDistance:
         return true;
     default:
         return false;
@@ -122,54 +120,7 @@ double lineWidthPixels(int cadWeight, bool showWeights)
     return 0.55 + millimeters[cadWeight] * 1.35;
 }
 
-QVector<QPointF> offsetPolygon(const QVector<QPointF> &polygon,
-                              double distance)
-{
-    if (polygon.size() < 3 || qAbs(distance) < 1.0e-12) {
-        return polygon;
-    }
-    QVector<QPointF> normalized = polygon;
-    double twiceArea = 0.0;
-    for (int i = 0; i < normalized.size(); ++i) {
-        const QPointF a = normalized[i];
-        const QPointF b = normalized[(i + 1) % normalized.size()];
-        twiceArea += a.x() * b.y() - b.x() * a.y();
-    }
-    if (twiceArea < 0.0) {
-        std::reverse(normalized.begin(), normalized.end());
-    }
-    QVector<QLineF> offsets;
-    offsets.reserve(normalized.size());
-    for (int i = 0; i < normalized.size(); ++i) {
-        const QPointF a = normalized[i];
-        const QPointF b = normalized[(i + 1) % normalized.size()];
-        const QPointF delta = b - a;
-        const double length = std::hypot(delta.x(), delta.y());
-        if (length < 1.0e-12) {
-            continue;
-        }
-        const QPointF normal(delta.y() / length, -delta.x() / length);
-        offsets.append(QLineF(a + normal * distance,
-                              b + normal * distance));
-    }
-    QVector<QPointF> result;
-    result.reserve(offsets.size());
-    for (int i = 0; i < offsets.size(); ++i) {
-        const QLineF previous = offsets[(i + offsets.size() - 1)
-                                        % offsets.size()];
-        const QLineF current = offsets[i];
-        QPointF intersection;
-        const auto type = previous.intersects(current, &intersection);
-        result.append(type == QLineF::NoIntersection ? current.p1()
-                                                     : intersection);
-    }
-    if (twiceArea < 0.0) {
-        std::reverse(result.begin(), result.end());
-    }
-    return result;
-}
-
-QPainterPath polygonPath(const QPainter &painter,
+ QPainterPath polygonPath(const QPainter &painter,
                          const QVector<QPointF> &screenPoints, bool close)
 {
     QPainterPath path;
@@ -1134,7 +1085,6 @@ void CadView::finishCurrentMeasurement()
     case ToolMode::SideArea:
     case ToolMode::Batch:
     case ToolMode::Polygon:
-    case ToolMode::AreaOffset:
         finishDraftForLabel();
         break;
     default:
@@ -1320,8 +1270,6 @@ void CadView::setDisplaySettings(const DisplaySettings &settings)
     m_settings = settings;
     m_settings.lengthPrecision = qBound(0, m_settings.lengthPrecision, 6);
     m_settings.areaPrecision = qBound(0, m_settings.areaPrecision, 6);
-    m_settings.coordinatePrecision =
-        qBound(0, m_settings.coordinatePrecision, 6);
     if (m_settings.annotationColor != previousAnnotationColor) {
         for (Measurement &measurement : m_measurements) {
             measurement.color = m_settings.annotationColor;
@@ -1352,7 +1300,6 @@ void CadView::setPrecision(int precision)
 {
     m_settings.lengthPrecision = qBound(0, precision, 6);
     m_settings.areaPrecision = m_settings.lengthPrecision;
-    m_settings.coordinatePrecision = m_settings.lengthPrecision;
     emit measurementsChanged();
     update();
 }
@@ -4392,8 +4339,7 @@ void CadView::drawMeasurement(QPainter &painter,
 
     if (measurement.type == MeasurementType::Rectangle
         || measurement.type == MeasurementType::Polygon
-        || measurement.type == MeasurementType::FilledArea
-        || measurement.type == MeasurementType::AreaOffset) {
+        || measurement.type == MeasurementType::FilledArea) {
         // 建筑制图习惯：面积标注只画房间轮廓 + 居中的面积/周长文字，
         // 不在每条边上堆叠尺寸文字。
         if (points.size() >= 3) {
@@ -4568,44 +4514,6 @@ void CadView::drawMeasurement(QPainter &painter,
         // 面积结果单独用引线标注，不与段长数字混淆。
         drawSideAreaAnnotation(painter, measurement, points, color,
                                selected);
-    } else if (measurement.type == MeasurementType::Diameter
-               && points.size() >= 2) {
-        const QPointF center = points[0];
-        const double radius = QLineF(center, points[1]).length();
-        QPointF direction = points[1] - center;
-        const double directionLength =
-            std::hypot(direction.x(), direction.y());
-        if (radius > 1.0e-9 && directionLength > 1.0e-9) {
-            direction /= directionLength;
-            painter.drawEllipse(center, radius, radius);
-            const QPointF diameterStart =
-                center - direction * radius;
-            const QPointF diameterEnd =
-                center + direction * radius;
-            painter.drawLine(diameterStart, diameterEnd);
-            drawArrow(painter, diameterStart, center, color);
-            drawArrow(painter, diameterEnd, center, color);
-
-            const double centerMark =
-                4.2 * geometryScale;
-            painter.save();
-            painter.setPen(QPen(
-                color, selected ? 1.55 : 1.15,
-                Qt::SolidLine, Qt::RoundCap));
-            painter.setBrush(Qt::NoBrush);
-            painter.drawLine(
-                QPointF(center.x() - centerMark, center.y()),
-                QPointF(center.x() + centerMark, center.y()));
-            painter.drawLine(
-                QPointF(center.x(), center.y() - centerMark),
-                QPointF(center.x(), center.y() + centerMark));
-            painter.setBrush(color);
-            painter.setPen(Qt::NoPen);
-            painter.drawEllipse(
-                center, 1.35 * geometryScale,
-                1.35 * geometryScale);
-            painter.restore();
-        }
     } else if ((measurement.type == MeasurementType::CircleArea
                 || measurement.type == MeasurementType::Radius)
                && points.size() >= 2) {
@@ -4788,47 +4696,6 @@ void CadView::drawMeasurement(QPainter &painter,
         const QPointF midpoint = (a + b) * 0.5;
         drawArrow(painter, a, midpoint, color);
         drawArrow(painter, b, midpoint, color);
-    } else if (measurement.type == MeasurementType::PointToLine
-               && points.size() >= 3) {
-        const QPointF delta = points[2] - points[1];
-        const double lengthSquared = QPointF::dotProduct(delta, delta);
-        if (lengthSquared > 1.0e-12) {
-            const QPointF foot =
-                points[1]
-                + delta
-                    * (QPointF::dotProduct(points[0] - points[1], delta)
-                       / lengthSquared);
-            painter.setPen(
-                QPen(color, selected ? 2.0 : 1.35,
-                     Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-            painter.drawLine(points[0], foot);
-            m_measurementHitSegments[measurement.id].append(
-                QLineF(points[0], foot));
-            drawArrow(painter, points[0], foot, color);
-            drawArrow(painter, foot, points[0], color);
-            painter.setBrush(Qt::NoBrush);
-            const double footSize = 3.0 * geometryScale;
-            painter.drawRect(
-                QRectF(foot.x() - footSize,
-                       foot.y() - footSize,
-                       footSize * 2.0, footSize * 2.0));
-            const QPointF dimensionMidpoint =
-                (points[0] + foot) * 0.5;
-            if (QLineF(label, dimensionMidpoint).length()
-                > 14.0 * geometryScale) {
-                painter.setPen(QPen(color, selected ? 1.4 : 1.0));
-                painter.drawLine(label, dimensionMidpoint);
-                drawArrow(painter, dimensionMidpoint, label, color);
-            }
-        }
-    } else if (measurement.type == MeasurementType::Coordinate
-               && !points.isEmpty()) {
-        painter.drawLine(
-            points.first() + QPointF(-7.0 * geometryScale, 0.0),
-            points.first() + QPointF(7.0 * geometryScale, 0.0));
-        painter.drawLine(
-            points.first() + QPointF(0.0, -7.0 * geometryScale),
-            points.first() + QPointF(0.0, 7.0 * geometryScale));
     }
 
     QString labelText = value;
@@ -4843,8 +4710,7 @@ void CadView::drawMeasurement(QPainter &painter,
     const bool boxedAnnotation = measurement.type == MeasurementType::Text;
     double textAngle = 0.0;
     QPointF textAnchor = label;
-    if ((measurement.type == MeasurementType::Aligned
-         || measurement.type == MeasurementType::FixedDistance)
+    if (measurement.type == MeasurementType::Aligned
         && points.size() >= 2) {
         textAngle = std::atan2(points[1].y() - points[0].y(),
                                points[1].x() - points[0].x())
@@ -4888,29 +4754,6 @@ void CadView::drawMeasurement(QPainter &painter,
     } else if (measurement.type == MeasurementType::Radius) {
         textAnchor = label;
         textAngle = 0.0;
-    } else if (measurement.type == MeasurementType::Diameter) {
-        if (points.size() >= 2) {
-            textAngle = std::atan2(points[1].y() - points[0].y(),
-                                   points[1].x() - points[0].x())
-                * 180.0 / kPi;
-            QPointF normal(-(points[1].y() - points[0].y()),
-                           points[1].x() - points[0].x());
-            const double normalLength =
-                std::hypot(normal.x(), normal.y());
-            if (normalLength > 1.0e-9) {
-                normal /= normalLength;
-                const QPointF lineCenter =
-                    (points[0] + points[1]) * 0.5;
-                const double side =
-                    QPointF::dotProduct(label - lineCenter, normal) >= 0.0
-                    ? 1.0
-                    : -1.0;
-                textAnchor =
-                    lineCenter
-                    + normal * side
-                        * (styleMetrics.textGap * geometryScale);
-            }
-        }
     }
     bool primaryTextDrawnInline = false;
     if ((measurement.type == MeasurementType::CircleArea
@@ -4930,8 +4773,7 @@ void CadView::drawMeasurement(QPainter &painter,
         const bool closedArea =
             measurement.type == MeasurementType::Rectangle
             || measurement.type == MeasurementType::Polygon
-            || measurement.type == MeasurementType::FilledArea
-            || measurement.type == MeasurementType::AreaOffset;
+            || measurement.type == MeasurementType::FilledArea;
         const bool labelInsideArea =
             closedArea && points.size() >= 3
             && QPolygonF(points).containsPoint(
@@ -4939,25 +4781,7 @@ void CadView::drawMeasurement(QPainter &painter,
         QPointF leaderTarget;
         double nearestDistance =
             std::numeric_limits<double>::max();
-        if (measurement.type == MeasurementType::Coordinate
-            && !points.isEmpty()) {
-            leaderTarget = points.first();
-            nearestDistance =
-                QLineF(textAnchor, leaderTarget).length();
-        } else if (measurement.type == MeasurementType::Diameter
-            && points.size() >= 2) {
-            const QPointF center = points[0];
-            const double radius = QLineF(center, points[1]).length();
-            QPointF direction = textAnchor - center;
-            const double length =
-                std::hypot(direction.x(), direction.y());
-            if (radius > 1.0e-9 && length > 1.0e-9) {
-                direction /= length;
-                leaderTarget = center + direction * radius;
-                nearestDistance =
-                    qAbs(length - radius);
-            }
-        } else {
+        {
             const int segmentCount =
                 closedArea && points.size() >= 3
                 ? int(points.size()) : int(points.size()) - 1;
@@ -5164,44 +4988,14 @@ std::optional<Measurement> CadView::draftMeasurement(
         measurement.auxiliaryValue = m_toolAuxiliaryValue;
         populateTracedMeasurement(measurement, sourcePoints);
         break;
-    case ToolMode::AreaOffset:
-        measurement.type = MeasurementType::AreaOffset;
-        measurement.closed = true;
-        measurement.auxiliaryValue = m_toolAuxiliaryValue;
-        measurement.points =
-            offsetPolygon(sourcePoints, m_toolAuxiliaryValue);
-        for (int i = 0; i < measurement.points.size(); ++i) {
-            const QPointF start = measurement.points[i];
-            const QPointF end =
-                measurement.points[(i + 1) % measurement.points.size()];
-            measurement.edgeLengths.append(QLineF(start, end).length());
-            measurement.edgeMidpoints.append((start + end) * 0.5);
-            measurement.edgeStarts.append(start);
-            measurement.edgeEnds.append(end);
-        }
-        break;
     case ToolMode::Radius:
         measurement.type = MeasurementType::Radius;
-        break;
-    case ToolMode::Diameter:
-        measurement.type = MeasurementType::Diameter;
-        measurement.closed = true;
         break;
     case ToolMode::Angle:
         measurement.type = MeasurementType::Angle;
         break;
     case ToolMode::ArcLength:
         measurement.type = MeasurementType::ArcLength;
-        break;
-    case ToolMode::Coordinate:
-        measurement.type = MeasurementType::Coordinate;
-        break;
-    case ToolMode::PointToLine:
-        measurement.type = MeasurementType::PointToLine;
-        break;
-    case ToolMode::FixedDistance:
-        measurement.type = MeasurementType::FixedDistance;
-        measurement.auxiliaryValue = m_toolAuxiliaryValue;
         break;
     default:
         return std::nullopt;
@@ -5360,8 +5154,6 @@ void CadView::drawDraft(QPainter &painter)
         case ToolMode::Rectangle:
         case ToolMode::Polygon:
         case ToolMode::SideArea:
-        case ToolMode::Diameter:
-        case ToolMode::FixedDistance:
             previewReady = draftPointCount >= 1;
             includeProvisionalPoint = previewReady;
             break;
@@ -5372,16 +5164,11 @@ void CadView::drawDraft(QPainter &painter)
             previewReady = draftPointCount >= 2;
             includeProvisionalPoint = previewReady;
             break;
-        case ToolMode::Coordinate:
-            previewReady = draftPointCount >= 1;
-            break;
         default:
             break;
         }
     } else {
-        previewReady = draftPointCount >= 2
-            || (m_mode == ToolMode::Coordinate
-                && draftPointCount >= 1);
+        previewReady = draftPointCount >= 2;
     }
     if (previewReady) {
         std::optional<Measurement> preview =
@@ -5493,8 +5280,7 @@ void CadView::mousePressEvent(QMouseEvent *event)
         }
         if (m_mode == ToolMode::Continuous || m_mode == ToolMode::Batch
             || m_mode == ToolMode::SideArea
-            || m_mode == ToolMode::Polygon
-            || m_mode == ToolMode::AreaOffset) {
+            || m_mode == ToolMode::Polygon) {
             finishDraftForLabel();
             update();
         }
@@ -5602,17 +5388,6 @@ void CadView::leftClick(const QPointF &screenPoint)
         commitDraft(screenToWorld(screenPoint));
         return;
     }
-    if (m_mode == ToolMode::PointToLine && m_draftPoints.size() == 1) {
-        const std::optional<QLineF> selectedLine =
-            lineEntityAt(screenPoint);
-        if (selectedLine) {
-            m_draftPoints.append(selectedLine->p1());
-            m_draftPoints.append(selectedLine->p2());
-            finishDraftForLabel();
-            update();
-            return;
-        }
-    }
     if (m_mode == ToolMode::Polygon && m_draftPoints.size() >= 3
         && QLineF(worldToScreen(m_draftPoints.first()), screenPoint).length()
             <= 12.0) {
@@ -5653,12 +5428,9 @@ void CadView::leftClick(const QPointF &screenPoint)
         || (m_mode == ToolMode::Rectangle && count >= 2)
         || (m_mode == ToolMode::CircleArea && count >= 3)
         || (m_mode == ToolMode::Radius && count >= 3)
-        || (m_mode == ToolMode::Diameter && count >= 2)
         || (m_mode == ToolMode::Angle && count >= 3)
         || (m_mode == ToolMode::ArcLength && count >= 3)
-        || (m_mode == ToolMode::Coordinate && count >= 1)
-        || (m_mode == ToolMode::PointToLine && count >= 3)
-        || (m_mode == ToolMode::FixedDistance && count >= 2);
+        ;
     if (ready) {
         finishDraftForLabel();
     }
@@ -5695,11 +5467,7 @@ void CadView::finishDraftForLabel()
         valid = m_draftPoints.size() >= 2;
         break;
     case ToolMode::Polygon:
-    case ToolMode::AreaOffset:
         valid = m_draftPoints.size() >= 3;
-        break;
-    case ToolMode::Coordinate:
-        valid = m_draftPoints.size() >= 1;
         break;
     default:
         valid = m_draftPoints.size() >= 2;
@@ -5975,8 +5743,7 @@ void CadView::mouseDoubleClickEvent(QMouseEvent *event)
     if (event->button() == Qt::LeftButton
         && (m_mode == ToolMode::Continuous || m_mode == ToolMode::Batch
             || m_mode == ToolMode::SideArea
-            || m_mode == ToolMode::Polygon
-            || m_mode == ToolMode::AreaOffset)
+            || m_mode == ToolMode::Polygon)
         && !m_awaitingLabel) {
         finishDraftForLabel();
     }
@@ -6031,10 +5798,8 @@ void CadView::keyPressEvent(QKeyEvent *event)
             && (m_mode == ToolMode::Continuous
                 || m_mode == ToolMode::SideArea
                 || m_mode == ToolMode::Batch
-                || m_mode == ToolMode::Polygon
-                || m_mode == ToolMode::AreaOffset)
+                || m_mode == ToolMode::Polygon)
             && (m_mode == ToolMode::Polygon
-                    || m_mode == ToolMode::AreaOffset
                 ? m_draftPoints.size() >= 3
                 : m_draftPoints.size() >= 2)) {
             finishDraftForLabel();
@@ -6058,8 +5823,7 @@ void CadView::keyPressEvent(QKeyEvent *event)
         if ((m_mode == ToolMode::Continuous
              || m_mode == ToolMode::SideArea
              || m_mode == ToolMode::Batch
-             || m_mode == ToolMode::Polygon
-             || m_mode == ToolMode::AreaOffset)
+             || m_mode == ToolMode::Polygon)
             && !m_awaitingLabel) {
             finishDraftForLabel();
             return;
@@ -6158,8 +5922,7 @@ QString CadView::hitMeasurementAt(const QPointF &screenPoint) const
         const bool closedArea =
             measurement.type == MeasurementType::Rectangle
             || measurement.type == MeasurementType::Polygon
-            || measurement.type == MeasurementType::FilledArea
-            || measurement.type == MeasurementType::AreaOffset;
+            || measurement.type == MeasurementType::FilledArea;
         if (closedArea && points.size() >= 3
             && QPolygonF(points).containsPoint(screenPoint,
                                                Qt::OddEvenFill)) {
@@ -6174,8 +5937,7 @@ QString CadView::hitMeasurementAt(const QPointF &screenPoint) const
         }
         const QPointF labelPosition =
             worldToScreen(measurement.labelPosition);
-        if ((measurement.type == MeasurementType::Aligned
-             || measurement.type == MeasurementType::FixedDistance)
+        if (measurement.type == MeasurementType::Aligned
             && points.size() >= 2) {
             QPointF normal(-(points[1].y() - points[0].y()),
                            points[1].x() - points[0].x());
@@ -6275,13 +6037,6 @@ QString CadView::hitMeasurementAt(const QPointF &screenPoint) const
                 return measurement.id;
             }
         }
-        if (measurement.type == MeasurementType::PointToLine
-            && points.size() >= 3
-            && distanceToSegment(QLineF(points[1], points[2]),
-                                 screenPoint)
-                <= 7.0) {
-            return measurement.id;
-        }
         if (measurement.type == MeasurementType::Angle
             && points.size() >= 3
             && (distanceToSegment(QLineF(points[0], points[1]),
@@ -6293,7 +6048,6 @@ QString CadView::hitMeasurementAt(const QPointF &screenPoint) const
             return measurement.id;
         }
         if ((measurement.type == MeasurementType::Radius
-             || measurement.type == MeasurementType::Diameter
              || measurement.type == MeasurementType::CircleArea)
             && points.size() >= 2) {
             const double radius = QLineF(points[0], points[1]).length();
@@ -6583,49 +6337,6 @@ CadView::prepareAllLayoutContents(const CadDocument &document)
     return prepared;
 }
 
-std::optional<QLineF> CadView::lineEntityAt(
-    const QPointF &screenPoint) const
-{
-    if (!m_document) {
-        return std::nullopt;
-    }
-    const QPointF worldPoint = screenToWorld(screenPoint);
-    const double tolerance = 9.0 / qMax(1.0e-12, m_scale);
-    const QVector<int> candidates = m_spatialIndex.query(
-        QRectF(worldPoint.x() - tolerance, worldPoint.y() - tolerance,
-               tolerance * 2.0, tolerance * 2.0),
-        1024);
-    double bestDistance = 9.0;
-    QLineF bestLine;
-    bool found = false;
-    for (int index : candidates) {
-        const CadEntity &entity = m_document->entities[index];
-        const CadLayer *layer = m_document->layerOf(entity);
-        if ((layer && !layer->visible)
-            || (entity.type != CadEntityType::Segment
-                && entity.type != CadEntityType::Polyline)
-            || entity.points.size() < 2) {
-            continue;
-        }
-        const int segmentCount =
-            entity.points.size() - (entity.closed ? 0 : 1);
-        for (int i = 0; i < segmentCount; ++i) {
-            const QPointF a = entity.points[i];
-            const QPointF b =
-                entity.points[(i + 1) % entity.points.size()];
-            const QLineF screenLine(worldToScreen(a), worldToScreen(b));
-            const double distance =
-                distanceToSegment(screenLine, screenPoint);
-            if (distance <= bestDistance) {
-                bestDistance = distance;
-                bestLine = QLineF(a, b);
-                found = true;
-            }
-        }
-    }
-    return found ? std::optional<QLineF>(bestLine) : std::nullopt;
-}
-
 int CadView::arcEntityIndexAt(const QPointF &screenPoint) const
 {
     if (!m_document) {
@@ -6817,8 +6528,7 @@ std::optional<Measurement> CadView::closedEntityMeasurementAt(
     measurement.closed =
         type == MeasurementType::FilledArea
         || type == MeasurementType::Rectangle
-        || type == MeasurementType::Polygon
-        || type == MeasurementType::AreaOffset;
+        || type == MeasurementType::Polygon;
     const CadEntity &source = m_document->entities[bestIndex];
     measurement.points = source.points;
     for (const CadDimensionEdge &edge : source.dimensionEdges) {
@@ -6979,19 +6689,10 @@ QString CadView::toolPrompt() const
             : QStringLiteral(
                 "侧面积：连续选择线段节点或圆弧；右键、Enter、"
                 "双击或闭合起点结束，再放置总长与侧面积");
-    case ToolMode::AreaOffset:
-        return m_awaitingLabel
-            ? QStringLiteral("单击放置偏移面积标注")
-            : QStringLiteral(
-                "面积偏移：按设定偏移距离绘制闭合边界，单击起点闭合");
     case ToolMode::Radius:
         return m_awaitingLabel
             ? QStringLiteral("单击放置半径标注")
             : QStringLiteral("半径测量：在圆周上选择三个不重复点");
-    case ToolMode::Diameter:
-        return m_awaitingLabel
-            ? QStringLiteral("单击放置直径标注")
-            : QStringLiteral("直径测量：选择圆心和圆周点");
     case ToolMode::Angle:
         return m_awaitingLabel
             ? QStringLiteral("单击放置角度标注")
@@ -7000,18 +6701,6 @@ QString CadView::toolPrompt() const
         return m_awaitingLabel
             ? QStringLiteral("单击放置弧长标注")
             : QStringLiteral("弧长测量：选择起点、弧上任意点、终点");
-    case ToolMode::Coordinate:
-        return m_awaitingLabel
-            ? QStringLiteral("单击放置坐标标注")
-            : QStringLiteral("坐标标注：选择要标注的点");
-    case ToolMode::PointToLine:
-        return m_awaitingLabel
-            ? QStringLiteral("单击放置点到直线距离标注")
-            : QStringLiteral("点到直线：先选点，再选直线上的两点");
-    case ToolMode::FixedDistance:
-        return m_awaitingLabel
-            ? QStringLiteral("单击放置定距标注")
-            : QStringLiteral("定距测量：选择起点和方向点，长度使用设定值");
     case ToolMode::PrintArea:
         return QStringLiteral("框选打印区域：选择打印范围的两个对角点");
     case ToolMode::Calibrate:

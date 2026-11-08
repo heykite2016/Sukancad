@@ -10,6 +10,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QSaveFile>
+#include <QSet>
 #include <QStandardPaths>
 #include <QUuid>
 
@@ -248,22 +249,12 @@ QString typeKey(MeasurementType type)
         return QStringLiteral("filled_area");
     case MeasurementType::SideArea:
         return QStringLiteral("side_area");
-    case MeasurementType::AreaOffset:
-        return QStringLiteral("area_offset");
     case MeasurementType::Radius:
         return QStringLiteral("radius");
-    case MeasurementType::Diameter:
-        return QStringLiteral("diameter");
     case MeasurementType::Angle:
         return QStringLiteral("angle");
     case MeasurementType::ArcLength:
         return QStringLiteral("arc_length");
-    case MeasurementType::Coordinate:
-        return QStringLiteral("coordinate");
-    case MeasurementType::PointToLine:
-        return QStringLiteral("point_to_line");
-    case MeasurementType::FixedDistance:
-        return QStringLiteral("fixed_distance");
     case MeasurementType::Text:
         return QStringLiteral("text");
     }
@@ -296,14 +287,8 @@ MeasurementType typeFromKey(const QString &key)
     if (key == QStringLiteral("side_area")) {
         return MeasurementType::SideArea;
     }
-    if (key == QStringLiteral("area_offset")) {
-        return MeasurementType::AreaOffset;
-    }
     if (key == QStringLiteral("radius")) {
         return MeasurementType::Radius;
-    }
-    if (key == QStringLiteral("diameter")) {
-        return MeasurementType::Diameter;
     }
     if (key == QStringLiteral("angle")) {
         return MeasurementType::Angle;
@@ -311,19 +296,30 @@ MeasurementType typeFromKey(const QString &key)
     if (key == QStringLiteral("arc_length")) {
         return MeasurementType::ArcLength;
     }
-    if (key == QStringLiteral("coordinate")) {
-        return MeasurementType::Coordinate;
-    }
-    if (key == QStringLiteral("point_to_line")) {
-        return MeasurementType::PointToLine;
-    }
-    if (key == QStringLiteral("fixed_distance")) {
-        return MeasurementType::FixedDistance;
-    }
     if (key == QStringLiteral("text")) {
         return MeasurementType::Text;
     }
     return MeasurementType::Linear;
+}
+
+bool isSupportedMeasurementTypeKey(const QString &key)
+{
+    static const QSet<QString> supported = {
+        QStringLiteral("aligned"),
+        QStringLiteral("linear"),
+        QStringLiteral("continuous"),
+        QStringLiteral("batch"),
+        QStringLiteral("rectangle"),
+        QStringLiteral("polygon"),
+        QStringLiteral("circle_area"),
+        QStringLiteral("filled_area"),
+        QStringLiteral("side_area"),
+        QStringLiteral("radius"),
+        QStringLiteral("angle"),
+        QStringLiteral("arc_length"),
+        QStringLiteral("text")
+    };
+    return supported.contains(key);
 }
 
 } // namespace
@@ -354,22 +350,12 @@ QString measurementTypeLabel(MeasurementType type)
         return QStringLiteral("填充面积");
     case MeasurementType::SideArea:
         return QStringLiteral("侧面积");
-    case MeasurementType::AreaOffset:
-        return QStringLiteral("偏移面积");
     case MeasurementType::Radius:
         return QStringLiteral("半径");
-    case MeasurementType::Diameter:
-        return QStringLiteral("直径");
     case MeasurementType::Angle:
         return QStringLiteral("角度");
     case MeasurementType::ArcLength:
         return QStringLiteral("弧长");
-    case MeasurementType::Coordinate:
-        return QStringLiteral("坐标");
-    case MeasurementType::PointToLine:
-        return QStringLiteral("点到直线");
-    case MeasurementType::FixedDistance:
-        return QStringLiteral("定距");
     case MeasurementType::Text:
         return QStringLiteral("文字注释");
     }
@@ -562,7 +548,6 @@ void Measurement::normalizeGeometry()
         || type == MeasurementType::Rectangle
         || type == MeasurementType::Polygon
         || type == MeasurementType::FilledArea
-        || type == MeasurementType::AreaOffset
         || type == MeasurementType::CircleArea) {
         return;
     }
@@ -585,9 +570,6 @@ double Measurement::rawLength() const
     if (points.size() < 2) {
         return 0.0;
     }
-    if (type == MeasurementType::FixedDistance && auxiliaryValue > 0.0) {
-        return auxiliaryValue;
-    }
     if (type == MeasurementType::Linear
         && (auxiliaryValue == 1.0 || auxiliaryValue == 2.0)) {
         return auxiliaryValue == 1.0
@@ -600,8 +582,7 @@ double Measurement::rawLength() const
     }
     if (type == MeasurementType::Rectangle
         || type == MeasurementType::Polygon
-        || type == MeasurementType::FilledArea
-        || type == MeasurementType::AreaOffset) {
+        || type == MeasurementType::FilledArea) {
         QVector<CadPoint2> converted;
         converted.reserve(points.size());
         for (const QPointF &point : points) {
@@ -625,25 +606,10 @@ double Measurement::rawLength() const
     if (type == MeasurementType::Radius) {
         return cad_distance(toC(points[0]), toC(points[1]));
     }
-    if (type == MeasurementType::Diameter) {
-        return cad_distance(toC(points[0]), toC(points[1])) * 2.0;
-    }
     if (type == MeasurementType::ArcLength && points.size() >= 3) {
         int valid = 0;
         return cad_arc_length_from_three_points(
             toC(points[0]), toC(points[1]), toC(points[2]), &valid);
-    }
-    if (type == MeasurementType::PointToLine && points.size() >= 3) {
-        const QPointF a = points[1];
-        const QPointF b = points[2];
-        const QPointF delta = b - a;
-        const double length = std::hypot(delta.x(), delta.y());
-        if (length <= 1.0e-12) {
-            return 0.0;
-        }
-        return qAbs(delta.x() * (a.y() - points[0].y())
-                    - (a.x() - points[0].x()) * delta.y())
-            / length;
     }
     return cad_distance(toC(points[0]), toC(points[1]));
 }
@@ -659,8 +625,7 @@ double Measurement::rawArea() const
     }
     if (type != MeasurementType::Rectangle
         && type != MeasurementType::Polygon
-        && type != MeasurementType::FilledArea
-        && type != MeasurementType::AreaOffset) {
+        && type != MeasurementType::FilledArea) {
         return 0.0;
     }
     QVector<CadPoint2> converted;
@@ -681,7 +646,6 @@ QString Measurement::primaryValue(const CadDocument &document,
     case MeasurementType::Rectangle:
     case MeasurementType::Polygon:
     case MeasurementType::FilledArea:
-    case MeasurementType::AreaOffset:
         return QStringLiteral("面积：%1\n周长：%2")
             .arg(formatAreaValue(rawArea(), document, settings.areaUnit,
                                  settings.areaPrecision),
@@ -731,40 +695,13 @@ QString Measurement::primaryValue(const CadDocument &document,
             .arg(formatDimensionValue(rawLength(), document,
                                       settings.lengthUnit,
                                       settings.lengthPrecision));
-    case MeasurementType::Diameter:
-        return QStringLiteral("⌀%1")
-            .arg(formatDimensionValue(rawLength(), document,
-                                      settings.lengthUnit,
-                                      settings.lengthPrecision));
     case MeasurementType::ArcLength:
         return QStringLiteral("弧长：%1")
             .arg(formatDimensionValue(rawLength(), document,
                                       settings.lengthUnit,
                                       settings.lengthPrecision));
-    case MeasurementType::PointToLine:
-        return QStringLiteral("距离：%1")
-            .arg(formatDimensionValue(rawLength(), document,
-                                      settings.lengthUnit,
-                                      settings.lengthPrecision));
-    case MeasurementType::FixedDistance:
-        return QStringLiteral("定距：%1")
-            .arg(formatDimensionValue(rawLength(), document,
-                                      settings.lengthUnit,
-                                      settings.lengthPrecision));
     case MeasurementType::Text:
         return note.isEmpty() ? QStringLiteral("文字注释") : note;
-    case MeasurementType::Coordinate:
-        if (!points.isEmpty()) {
-            const QPointF point = points.first();
-            const double factor = document.metersPerDrawingUnit
-                / measuringUnitMeters(settings.coordinateUnit);
-            return QStringLiteral("X=%1  Y=%2")
-                .arg(point.x() * factor, 0, 'f',
-                     settings.coordinatePrecision)
-                .arg(point.y() * factor, 0, 'f',
-                     settings.coordinatePrecision);
-        }
-        break;
     case MeasurementType::Continuous:
         return QStringLiteral("总长：%1")
             .arg(formatDimensionValue(
@@ -946,13 +883,9 @@ bool writeAnnotationFile(const QString &drawingPath,
                 static_cast<int>(settings.lengthUnit));
     root.insert(QStringLiteral("areaUnit"),
                 static_cast<int>(settings.areaUnit));
-    root.insert(QStringLiteral("coordinateUnit"),
-                static_cast<int>(settings.coordinateUnit));
     root.insert(QStringLiteral("lengthPrecision"),
                 settings.lengthPrecision);
     root.insert(QStringLiteral("areaPrecision"), settings.areaPrecision);
-    root.insert(QStringLiteral("coordinatePrecision"),
-                settings.coordinatePrecision);
     root.insert(QStringLiteral("dimensionTextScale"),
                 qBound(0.5, settings.dimensionTextScale, 2.5));
     root.insert(QStringLiteral("annotationScaleWithDrawing"),
@@ -1117,8 +1050,6 @@ bool loadAnnotations(const QString &drawingPath, CadDocument &document,
         const int areaUnit =
             root.value(QStringLiteral("areaUnit"))
                 .toInt(static_cast<int>(MeasuringUnit::Meter));
-        const int coordinateUnit =
-            root.value(QStringLiteral("coordinateUnit")).toInt(legacyUnit);
         settings->annotationStyle = annotationStyleFromKey(
             root.value(QStringLiteral("annotationStyle"))
                 .toString(),
@@ -1133,10 +1064,6 @@ bool loadAnnotations(const QString &drawingPath, CadDocument &document,
         if (validUnit(areaUnit)) {
             settings->areaUnit = static_cast<MeasuringUnit>(areaUnit);
         }
-        if (validUnit(coordinateUnit)) {
-            settings->coordinateUnit =
-                static_cast<MeasuringUnit>(coordinateUnit);
-        }
         settings->lengthPrecision = qBound(
             0, root.value(QStringLiteral("lengthPrecision"))
                    .toInt(settings->lengthPrecision),
@@ -1144,10 +1071,6 @@ bool loadAnnotations(const QString &drawingPath, CadDocument &document,
         settings->areaPrecision = qBound(
             0, root.value(QStringLiteral("areaPrecision"))
                    .toInt(settings->areaPrecision),
-            6);
-        settings->coordinatePrecision = qBound(
-            0, root.value(QStringLiteral("coordinatePrecision"))
-                   .toInt(settings->coordinatePrecision),
             6);
         settings->dimensionTextScale = qBound(
             0.5,
@@ -1193,7 +1116,11 @@ bool loadAnnotations(const QString &drawingPath, CadDocument &document,
     for (const QJsonValue &value :
          root.value(QStringLiteral("measurements")).toArray()) {
         if (value.isObject()) {
-            measurements->append(Measurement::fromJson(value.toObject()));
+            const QJsonObject object = value.toObject();
+            if (isSupportedMeasurementTypeKey(
+                    object.value(QStringLiteral("type")).toString())) {
+                measurements->append(Measurement::fromJson(object));
+            }
         }
     }
     for (Measurement &measurement : *measurements) {

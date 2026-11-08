@@ -9,6 +9,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import kotlin.math.abs
+import kotlin.math.max
 import kotlin.math.min
 
 private const val INK = 0xFFD6DFE6.toInt()
@@ -152,17 +153,23 @@ class CadToolRowView(
     private var downY = 0f
     private var downIndex = -1
     private val itemWidth = 100f * density
+    private var originX = 0f
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        val desired = (labels.size * itemWidth).toInt().coerceAtLeast(1)
+        val desired = max(
+            (labels.size * itemWidth).toInt().coerceAtLeast(1),
+            suggestedMinimumWidth,
+        )
         setMeasuredDimension(resolveSize(desired, widthMeasureSpec), (52 * density).toInt())
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
+        val totalWidth = labels.size * itemWidth
+        originX = ((width - totalWidth) / 2f).coerceAtLeast(0f)
         for (index in labels.indices) {
-            val left = index * itemWidth + 3 * density
-            val right = (index + 1) * itemWidth - 3 * density
+            val left = originX + index * itemWidth + 3 * density
+            val right = originX + (index + 1) * itemWidth - 3 * density
             tile.set(left, 2 * density, right, height - 2 * density)
             paint.style = Paint.Style.FILL
             paint.color = TILE
@@ -235,7 +242,10 @@ class CadToolRowView(
     }
 
     private fun indexAt(x: Float): Int {
-        if (labels.isEmpty() || x < 0f || x > width) return -1
-        return (x / itemWidth).toInt().coerceIn(0, labels.lastIndex)
+        if (labels.isEmpty()) return -1
+        val totalWidth = labels.size * itemWidth
+        val start = ((width - totalWidth) / 2f).coerceAtLeast(0f)
+        if (x < start || x > start + totalWidth) return -1
+        return ((x - start) / itemWidth).toInt().coerceIn(0, labels.lastIndex)
     }
 }

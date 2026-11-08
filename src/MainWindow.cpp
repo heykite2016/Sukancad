@@ -284,17 +284,11 @@ void saveApplicationDisplaySettings(const DisplaySettings &settings)
     values.setValue(
         QStringLiteral("display/areaUnit"), int(settings.areaUnit));
     values.setValue(
-        QStringLiteral("display/coordinateUnit"),
-        int(settings.coordinateUnit));
-    values.setValue(
         QStringLiteral("display/lengthPrecision"),
         qBound(0, settings.lengthPrecision, 6));
     values.setValue(
         QStringLiteral("display/areaPrecision"),
         qBound(0, settings.areaPrecision, 6));
-    values.setValue(
-        QStringLiteral("display/coordinatePrecision"),
-        qBound(0, settings.coordinatePrecision, 6));
     values.sync();
 }
 
@@ -353,9 +347,6 @@ void loadApplicationDisplaySettings(DisplaySettings &settings)
     settings.areaUnit = MeasuringUnit(values.value(
         QStringLiteral("display/areaUnit"),
         int(settings.areaUnit)).toInt());
-    settings.coordinateUnit = MeasuringUnit(values.value(
-        QStringLiteral("display/coordinateUnit"),
-        int(settings.coordinateUnit)).toInt());
     settings.lengthPrecision = qBound(
         0, values.value(
             QStringLiteral("display/lengthPrecision"),
@@ -364,10 +355,6 @@ void loadApplicationDisplaySettings(DisplaySettings &settings)
         0, values.value(
             QStringLiteral("display/areaPrecision"),
             settings.areaPrecision).toInt(), 6);
-    settings.coordinatePrecision = qBound(
-        0, values.value(
-            QStringLiteral("display/coordinatePrecision"),
-            settings.coordinatePrecision).toInt(), 6);
 }
 
 QString drawingIdentityHash(const QString &path)
@@ -1428,22 +1415,12 @@ void MainWindow::createActions()
     makeToolAction(QStringLiteral("半径标注"), QStringLiteral("radius"),
                    CadView::ToolMode::Radius,
                    QKeySequence(QStringLiteral("R")));
-    makeToolAction(QStringLiteral("直径标注"), QStringLiteral("diameter"),
-                   CadView::ToolMode::Diameter,
-                   QKeySequence(QStringLiteral("Shift+D")));
     makeToolAction(QStringLiteral("角度标注"), QStringLiteral("angle"),
                    CadView::ToolMode::Angle,
                    QKeySequence(QStringLiteral("G")));
     makeToolAction(QStringLiteral("弧长标注"), QStringLiteral("arc"),
                    CadView::ToolMode::ArcLength,
                    QKeySequence(QStringLiteral("K")));
-    makeToolAction(QStringLiteral("坐标标注"), QStringLiteral("coordinate"),
-                   CadView::ToolMode::Coordinate,
-                   QKeySequence(QStringLiteral("X")));
-    makeToolAction(QStringLiteral("点到线距离"),
-                   QStringLiteral("point-line"),
-                   CadView::ToolMode::PointToLine,
-                   QKeySequence(QStringLiteral("J")));
     makeToolAction(QStringLiteral("文字注释"), QStringLiteral("text"),
                    CadView::ToolMode::Text,
                    QKeySequence(QStringLiteral("T")));
@@ -1459,21 +1436,11 @@ void MainWindow::createActions()
             m_toolGroup->addAction(action);
             connect(action, &QAction::triggered, this, starter);
         };
-    addAuxiliaryTool(QStringLiteral("定距标注"),
-                     QStringLiteral("fixed-distance"),
-                     CadView::ToolMode::FixedDistance,
-                     QKeySequence(QStringLiteral("M")),
-                     [this] { beginFixedDistance(); });
     addAuxiliaryTool(QStringLiteral("侧面积"),
                      QStringLiteral("side-area"),
                      CadView::ToolMode::SideArea,
                      QKeySequence(QStringLiteral("Shift+S")),
                      [this] { beginSideArea(); });
-    addAuxiliaryTool(QStringLiteral("偏移面积"),
-                     QStringLiteral("area-offset"),
-                     CadView::ToolMode::AreaOffset,
-                     QKeySequence(QStringLiteral("U")),
-                     [this] { beginAreaOffset(); });
     makeToolAction(QStringLiteral("校准比例"),
                    QStringLiteral("calibrate"),
                    CadView::ToolMode::Calibrate,
@@ -1646,30 +1613,15 @@ void MainWindow::createActions()
         case CadView::ToolMode::SideArea:
             return QStringLiteral(
                 "连续选择线段或圆弧，并按指定高度计算总长和侧面积");
-        case CadView::ToolMode::AreaOffset:
-            return QStringLiteral(
-                "为闭合轮廓设置偏移距离，计算偏移后的面积");
         case CadView::ToolMode::Radius:
             return QStringLiteral(
                 "在圆周上选择三个点，创建半径标注");
-        case CadView::ToolMode::Diameter:
-            return QStringLiteral(
-                "选择圆心和圆周点，创建直径标注");
         case CadView::ToolMode::Angle:
             return QStringLiteral(
                 "依次选择顶点和两条边，创建角度标注");
         case CadView::ToolMode::ArcLength:
             return QStringLiteral(
                 "依次选择起点、弧上点和终点，创建弧长标注");
-        case CadView::ToolMode::Coordinate:
-            return QStringLiteral(
-                "单击目标位置，创建 X/Y 坐标标注");
-        case CadView::ToolMode::PointToLine:
-            return QStringLiteral(
-                "先选择点，再选择直线，标注垂直距离");
-        case CadView::ToolMode::FixedDistance:
-            return QStringLiteral(
-                "选择起点和方向，创建指定长度的定距标注");
         case CadView::ToolMode::Text:
             return QStringLiteral(
                 "单击图纸位置，添加文字注释");
@@ -1698,16 +1650,6 @@ void MainWindow::createActions()
                     + QStringLiteral("  [%1]").arg(shortcut);
         action->setToolTip(help);
         action->setStatusTip(description);
-        const int mode = action->data().toInt();
-        if (mode == int(CadView::ToolMode::Coordinate)
-            || mode == int(CadView::ToolMode::Diameter)
-            || mode == int(CadView::ToolMode::AreaOffset)
-            || mode == int(CadView::ToolMode::PointToLine)
-            || mode == int(CadView::ToolMode::FixedDistance)) {
-            action->setVisible(false);
-            action->setEnabled(false);
-            action->setShortcut(QKeySequence());
-        }
     }
 }
 
@@ -1790,13 +1732,6 @@ void MainWindow::createInterface()
             actionForMode(CadView::ToolMode::Calibrate)) {
         toolbar->addAction(calibrateAction);
     }
-    auto *autoCalibrateAction =
-        makeAction(QStringLiteral("自动校准比例"),
-                   QStringLiteral("calibrate"),
-                   QKeySequence(QStringLiteral("Ctrl+Shift+C")));
-    connect(autoCalibrateAction, &QAction::triggered, this,
-            &MainWindow::autoCalibrateDrawing);
-    toolbar->addAction(autoCalibrateAction);
     auto *deleteMenu = new QMenu(toolbar);
     deleteMenu->addAction(m_eraseAction);
     deleteMenu->addAction(m_deleteAllAction);
@@ -1865,12 +1800,9 @@ void MainWindow::createInterface()
                 || mode == int(CadView::ToolMode::CircleArea)
                 || mode == int(CadView::ToolMode::FilledArea)
                 || mode == int(CadView::ToolMode::SideArea)
-                || mode == int(CadView::ToolMode::AreaOffset)
                 || mode == int(CadView::ToolMode::Radius)
-                || mode == int(CadView::ToolMode::Diameter)
                 || mode == int(CadView::ToolMode::Angle)
                 || mode == int(CadView::ToolMode::ArcLength)
-                || mode == int(CadView::ToolMode::Coordinate)
                 || mode == int(CadView::ToolMode::Text)
                 || mode == int(CadView::ToolMode::Calibrate)
                 || mode == int(CadView::ToolMode::ZoomWindow)
@@ -4219,7 +4151,6 @@ void MainWindow::finishDrawingLoad()
     DisplaySettings settings;
     settings.lengthUnit = result.document->sourceUnit;
     settings.areaUnit = MeasuringUnit::Meter;
-    settings.coordinateUnit = result.document->sourceUnit;
     loadApplicationDisplaySettings(settings);
     QVector<Measurement> measurements;
     QString annotationError;
@@ -4981,169 +4912,7 @@ void MainWindow::requestCalibration(double rawLength)
     refreshStatus();
 }
 
-void MainWindow::autoCalibrateDrawing()
-{
-    if (!m_view || !m_view->document()) {
-        return;
-    }
-    const CadDocument &document = *m_view->document();
-    const DisplaySettings settings = m_view->displaySettings();
-    const double width = document.bounds.width();
-    const double height = document.bounds.height();
-    const double diagonal =
-        std::hypot(width, height);
-    const QRegularExpression numeric(
-        QStringLiteral("^(?:R|Ø|⌀)?(\\d+(?:\\.\\d+)?)(?:MM|M)?$"),
-        QRegularExpression::CaseInsensitiveOption);
-    QVector<double> ratios;
-    ratios.reserve(256);
-
-    for (const CadEntity &text : document.entities) {
-        if (text.type != CadEntityType::Text) {
-            continue;
-        }
-        QString normalized = text.text.trimmed();
-        normalized.remove(QRegularExpression(QStringLiteral("\\s+")));
-        normalized.remove(QLatin1Char(','));
-        const QRegularExpressionMatch match = numeric.match(normalized);
-        if (!match.hasMatch()) {
-            continue;
-        }
-        bool ok = false;
-        const double displayedValue =
-            match.captured(1).toDouble(&ok);
-        if (!ok || displayedValue <= 0.0) {
-            continue;
-        }
-        const double radius = std::max(
-            text.textHeight * 16.0,
-            diagonal * 0.0025);
-
-        struct Candidate {
-            double length = 0.0;
-            double distance = 0.0;
-        };
-        QVector<Candidate> dimensionCandidates;
-        QVector<Candidate> lineCandidates;
-        for (const CadEntity &entity : document.entities) {
-            if (!entity.bounds.adjusted(
-                    -radius, -radius, radius, radius)
-                     .contains(text.textPosition)) {
-                continue;
-            }
-            for (const CadDimensionEdge &edge : entity.dimensionEdges) {
-                if (edge.length <= 1.0e-12) {
-                    continue;
-                }
-                dimensionCandidates.append({
-                    edge.length,
-                    QLineF(text.textPosition, edge.midpoint).length()
-                });
-            }
-            if (entity.type != CadEntityType::Segment
-                && entity.type != CadEntityType::Polyline) {
-                continue;
-            }
-            for (const QLineF &line : entity.segments()) {
-                const QPointF direction = line.p2() - line.p1();
-                const double lengthSquared =
-                    QPointF::dotProduct(direction, direction);
-                if (lengthSquared <= 1.0e-18) {
-                    continue;
-                }
-                const double t = std::clamp(
-                    QPointF::dotProduct(
-                        text.textPosition - line.p1(), direction)
-                        / lengthSquared,
-                    0.0, 1.0);
-                const QPointF foot = line.p1() + direction * t;
-                lineCandidates.append({
-                    line.length(),
-                    QLineF(text.textPosition, foot).length()
-                });
-            }
-        }
-        auto nearestCandidates = [&radius](QVector<Candidate> &candidates) {
-            std::sort(candidates.begin(), candidates.end(),
-                [](const Candidate &a, const Candidate &b) {
-                    return a.distance < b.distance;
-                });
-            QVector<Candidate> accepted;
-            for (const Candidate &candidate : candidates) {
-                if (candidate.distance > radius || accepted.size() >= 4) {
-                    break;
-                }
-                accepted.append(candidate);
-            }
-            return accepted;
-        };
-        QVector<Candidate> accepted =
-            dimensionCandidates.isEmpty()
-            ? nearestCandidates(lineCandidates)
-            : nearestCandidates(dimensionCandidates);
-        for (const Candidate &candidate : accepted) {
-            if (candidate.length <= 1.0e-12) {
-                continue;
-            }
-            const double ratio = displayedValue / candidate.length;
-            if (std::isfinite(ratio)
-                && ratio > 1.0e-8 && ratio < 1.0e8) {
-                ratios.append(ratio);
-            }
-        }
-    }
-    if (ratios.size() < 3) {
-        QMessageBox::information(
-            this, QStringLiteral("自动校准比例"),
-            QStringLiteral(
-                "没有找到足够的“尺寸文字 + 对应线段”样本。\n"
-                "请使用“校准比例”，拾取两个已知端点后手动输入长度。"));
-        return;
-    }
-
-    std::sort(ratios.begin(), ratios.end());
-    int bestStart = 0;
-    int bestCount = 0;
-    int left = 0;
-    for (int right = 0; right < ratios.size(); ++right) {
-        while (ratios[right] / ratios[left] > 1.02) {
-            ++left;
-        }
-        const int count = right - left + 1;
-        if (count > bestCount) {
-            bestCount = count;
-            bestStart = left;
-        }
-    }
-    if (bestCount < 3) {
-        QMessageBox::information(
-            this, QStringLiteral("自动校准比例"),
-            QStringLiteral(
-                "尺寸样本之间的比例不一致，无法可靠自动校准。\n"
-                "请使用“校准比例”手动指定已知长度。"));
-        return;
-    }
-
-    const double ratio =
-        ratios[bestStart + bestCount / 2];
-    m_view->document()->metersPerDrawingUnit =
-        ratio * measuringUnitMeters(settings.lengthUnit);
-    m_view->document()->calibrated = true;
-    rememberCalibrationRecord(*m_view->document());
-    saveAnnotationsNow();
-    refreshStatus();
-    m_view->update();
-    QMessageBox::information(
-        this, QStringLiteral("自动校准比例"),
-        QStringLiteral(
-            "自动校准完成。\n"
-            "采用 %1 个一致的尺寸样本。\n"
-            "当前换算比例：1 图纸单位 = %2 米。")
-            .arg(bestCount)
-            .arg(m_view->document()->metersPerDrawingUnit, 0, 'g', 10));
-}
-
-void MainWindow::requestTextAnnotation(const QPointF &position)
+ void MainWindow::requestTextAnnotation(const QPointF &position)
 {
     bool accepted = false;
     const QString text = QInputDialog::getMultiLineText(
@@ -5606,19 +5375,14 @@ void MainWindow::showAnnotationSettings()
     };
     auto *lengthUnit = makeUnitCombo(draft.lengthUnit, false);
     auto *areaUnit = makeUnitCombo(draft.areaUnit, true);
-    auto *coordinateUnit = makeUnitCombo(draft.coordinateUnit, false);
     auto *lengthPrecision = makePrecision(draft.lengthPrecision);
     auto *areaPrecision = makePrecision(draft.areaPrecision);
-    auto *coordinatePrecision = makePrecision(draft.coordinatePrecision);
     unitsGrid->addWidget(new QLabel(QStringLiteral("长度")), 1, 0);
     unitsGrid->addWidget(lengthUnit, 1, 1);
     unitsGrid->addWidget(lengthPrecision, 1, 2);
     unitsGrid->addWidget(new QLabel(QStringLiteral("面积")), 2, 0);
     unitsGrid->addWidget(areaUnit, 2, 1);
     unitsGrid->addWidget(areaPrecision, 2, 2);
-    unitsGrid->addWidget(new QLabel(QStringLiteral("坐标")), 3, 0);
-    unitsGrid->addWidget(coordinateUnit, 3, 1);
-    unitsGrid->addWidget(coordinatePrecision, 3, 2);
     unitsGrid->setColumnStretch(1, 1);
     unitsLayout->addWidget(unitsGroup);
     unitsLayout->addStretch(1);
@@ -5753,11 +5517,8 @@ void MainWindow::showAnnotationSettings()
         static_cast<MeasuringUnit>(lengthUnit->currentData().toInt());
     draft.areaUnit =
         static_cast<MeasuringUnit>(areaUnit->currentData().toInt());
-    draft.coordinateUnit =
-        static_cast<MeasuringUnit>(coordinateUnit->currentData().toInt());
     draft.lengthPrecision = lengthPrecision->value();
     draft.areaPrecision = areaPrecision->value();
-    draft.coordinatePrecision = coordinatePrecision->value();
     draft.crosshairColor = selectedCrosshairColor;
     draft.crosshairLength = crosshairLength->value();
     draft.crosshairLineWidth = crosshairWidth->value();
@@ -5970,7 +5731,6 @@ void MainWindow::showAnnotationSettingsLegacy()
     };
     auto *lengthUnit = makeUnitCombo(settings.lengthUnit, false);
     auto *areaUnit = makeUnitCombo(settings.areaUnit, true);
-    auto *coordinateUnit = makeUnitCombo(settings.coordinateUnit, false);
     const auto makePrecision = [](int value) {
         auto *spin = new QSpinBox;
         spin->setRange(0, 6);
@@ -5981,7 +5741,6 @@ void MainWindow::showAnnotationSettingsLegacy()
     };
     auto *lengthPrecision = makePrecision(settings.lengthPrecision);
     auto *areaPrecision = makePrecision(settings.areaPrecision);
-    auto *coordinatePrecision = makePrecision(settings.coordinatePrecision);
 
     auto *stylePanel = new QFrame;
     stylePanel->setObjectName(QStringLiteral("annotationSettingsCard"));
@@ -6053,7 +5812,7 @@ void MainWindow::showAnnotationSettingsLegacy()
     unitCardLayout->setSpacing(11);
     addSectionHeader(
         unitCardLayout, QStringLiteral("单位与精度"),
-        QStringLiteral("控制长度、面积和坐标值的显示方式"));
+        QStringLiteral("控制长度和面积的显示方式"));
     auto *unitGrid = new QGridLayout;
     unitGrid->setContentsMargins(0, 1, 0, 0);
     unitGrid->setHorizontalSpacing(9);
@@ -6079,8 +5838,6 @@ void MainWindow::showAnnotationSettingsLegacy()
         };
     addUnitRow(1, QStringLiteral("长度"), lengthUnit, lengthPrecision);
     addUnitRow(2, QStringLiteral("面积"), areaUnit, areaPrecision);
-    addUnitRow(
-        3, QStringLiteral("坐标"), coordinateUnit, coordinatePrecision);
     unitCardLayout->addLayout(unitGrid);
     auto *unitHint = new QLabel(
         QStringLiteral("建议施工图纸使用毫米，面积使用平方米。"));
@@ -6324,13 +6081,10 @@ void MainWindow::showAnnotationSettingsLegacy()
         static_cast<MeasuringUnit>(lengthUnit->currentData().toInt());
     settings.areaUnit =
         static_cast<MeasuringUnit>(areaUnit->currentData().toInt());
-    settings.coordinateUnit =
-        static_cast<MeasuringUnit>(coordinateUnit->currentData().toInt());
     settings.annotationStyle =
         static_cast<AnnotationStyle>(styleGroup->checkedId());
     settings.lengthPrecision = lengthPrecision->value();
     settings.areaPrecision = areaPrecision->value();
-    settings.coordinatePrecision = coordinatePrecision->value();
     settings.annotationColor = selectedColor;
     settings.crosshairColor = selectedCrosshairColor;
     settings.crosshairLength = crosshairLength->value();
@@ -6724,7 +6478,6 @@ void MainWindow::showHelp()
         <h3>测量工具</h3>
         <ul>
           <li>支持对齐、线性、连续、批量、矩形、多边形、圆面积、填充面积、侧面积、半径、角度和弧长测量；文字注释与比例校准位于主工具栏。</li>
-          <li>“自动校准比例”（<kbd>Ctrl+Shift+C</kbd>）从原图尺寸文字与对应线段中寻找一致样本；样本不足时改用手动校准，拾取已知长度的两个端点。</li>
           <li>连续测量中可直接点击圆弧本体，系统自动选择最近端点、沿圆弧取整段弧长，并保留绘制真实圆弧。</li>
           <li>连续、批量和多边形可用 <kbd>Esc</kbd>、右键、<kbd>Enter</kbd> 或双击结束，再单击放置尺寸文字。</li>
           <li>连续测量把尺寸线直接放在实测线段或圆弧上，端点使用圆点，逐段长度沿该段放置；总结果固定在进行左键确认的位置，并用箭头指向测量路径上的最近垂足。</li>
@@ -6742,7 +6495,7 @@ void MainWindow::showHelp()
         <h3>单位、比例和标注样式</h3>
         <ul>
           <li>提供中国室内常用、大号建筑斜线、机械 ISO-25、工程开口箭头、小数圆点和紧凑端线六种样式；尺寸字体优先沿用原图字高，原图没有尺寸时默认 25 px，并可设为该基准的 50%–250%。“标注随图纸缩放”关闭后，尺寸与面积标注保持固定屏幕大小；屏幕显示保证至少 25 px，不影响自由文字注释。</li>
-          <li>长度、面积和坐标分别设置单位与精度；尺寸文字参考图纸原有标注字高并随视图缩放。</li>
+          <li>长度和面积分别设置单位与精度；尺寸文字参考图纸原有标注字高并随视图缩放。</li>
           <li>“标注显示与测量设置”使用“标注样式 / 单位与精度 / 十字光标”标签组；标注样式和颜色右侧提供实际图纸标注预览。十字光标按画布宽度比例设置，并可配置中心方框。</li>
           <li>比例校准、测量和文字标注自动保存，重新打开图纸时恢复。</li>
         </ul>
@@ -6787,7 +6540,6 @@ void MainWindow::showHelp()
           <tr><td><kbd>Shift+R</kbd> / <kbd>O</kbd> / <kbd>F</kbd> / <kbd>R</kbd></td><td>矩形 / 圆 / 填充 / 半径</td></tr>
           <tr><td><kbd>G</kbd> / <kbd>K</kbd></td><td>角度 / 弧长</td></tr>
           <tr><td><kbd>Shift+S</kbd> / <kbd>Shift+C</kbd></td><td>侧面积 / 比例校准</td></tr>
-          <tr><td><kbd>Ctrl+Shift+C</kbd></td><td>自动校准比例</td></tr>
           <tr><td><kbd>T</kbd> / <kbd>Z</kbd> / <kbd>0</kbd></td><td>文字 / 窗口缩放 / 显示全图</td></tr>
           <tr><td><kbd>Ctrl+P</kbd> / <kbd>Shift+Delete</kbd></td><td>打印预览 / 删除全部标注</td></tr>
           <tr><td><kbd>Delete</kbd> / <kbd>Esc</kbd></td><td>删除所选标注 / 取消或结束路径</td></tr>
@@ -6983,50 +6735,7 @@ void MainWindow::showAbout()
     dialog.exec();
 }
 
-void MainWindow::beginFixedDistance()
-{
-    if (!m_view->document()) {
-        return;
-    }
-    const DisplaySettings settings = m_view->displaySettings();
-    bool accepted = false;
-    const double value = QInputDialog::getDouble(
-        this, QStringLiteral("定距测量"),
-        QStringLiteral("输入固定距离（%1）：")
-            .arg(measuringUnitLabel(settings.lengthUnit)),
-        1.0, 0.0, 1.0e15, settings.lengthPrecision, &accepted);
-    if (!accepted) {
-        m_view->beginTool(CadView::ToolMode::Select);
-        return;
-    }
-    const double raw = value * measuringUnitMeters(settings.lengthUnit)
-        / m_view->document()->metersPerDrawingUnit;
-    m_view->beginTool(CadView::ToolMode::FixedDistance, raw);
-}
-
-void MainWindow::beginAreaOffset()
-{
-    if (!m_view->document()) {
-        return;
-    }
-    const DisplaySettings settings = m_view->displaySettings();
-    bool accepted = false;
-    const double value = QInputDialog::getDouble(
-        this, QStringLiteral("面积偏移"),
-        QStringLiteral(
-            "输入边界偏移距离（%1，正值向外扩展，负值向内收缩）：")
-            .arg(measuringUnitSuffix(settings.lengthUnit)),
-        0.0, -1.0e15, 1.0e15, settings.lengthPrecision, &accepted);
-    if (!accepted) {
-        m_view->beginTool(CadView::ToolMode::Select);
-        return;
-    }
-    const double raw = value * measuringUnitMeters(settings.lengthUnit)
-        / m_view->document()->metersPerDrawingUnit;
-    m_view->beginTool(CadView::ToolMode::AreaOffset, raw);
-}
-
-void MainWindow::beginSideArea()
+ void MainWindow::beginSideArea()
 {
     if (!m_view->document()) {
         return;
@@ -8464,8 +8173,6 @@ const QVector<CommandSpec> &commandSpecTable()
          "选择起点、弧上点和终点创建弧长标注"},
         {"TEXT", "DT DTEXT TEXT MTEXT", "文字注释",
          "单击位置后输入文字"},
-        {"AUTOCALIBRATE", "AUTOCAL AUTO-CAL AUTOCALIBRATE", "自动校准比例",
-         "从原图尺寸文字与对应线段自动识别比例"},
         {"CALIBRATE", "CAL CALIBRATE", "比例校准",
          "选择已知长度的两个端点校准图纸比例"},
         {"ERASE", "E ERASE DEL", "删除标注",
@@ -8478,98 +8185,7 @@ const QVector<CommandSpec> &commandSpecTable()
     return specs;
 }
 
-[[maybe_unused]] const QVector<CommandSpec> &legacyCommandSpecTable()
-{
-    static const QVector<CommandSpec> specs = {
-        {"SELECT", "SELECT SEL 选择", "选择",
-         "退出当前工具，回到浏览/选择状态"},
-        {"ERASE", "E ERASE DEL 删除", "删除标注",
-         "单击标注删除，拖动框选批量删除"},
-        {"ALIGNED", "L LINE DL DAL DIMALIGNED 对齐 对齐尺寸", "对齐尺寸",
-         "两点间距离，尺寸线与两点连线平行"},
-        {"LINEAR", "DLI LINEAR DIMLINEAR 线性 线性尺寸", "线性尺寸",
-         "自动取两点的水平或垂直距离"},
-        {"CONTINUOUS", "DCO CONTINUOUS DIMCONTINUE 连续 连续标注", "连续标注",
-         "连续选点生成建筑尺寸链"},
-        {"BATCH", "DB BATCH DIMBATCH 批量 批量标注", "批量标注",
-         "连续选点后一次生成各段尺寸"},
-        {"RECT", "REC RECT RECTANG RECTANGLE 矩形", "矩形面积",
-         "两个对角点，输出面积与周长"},
-        {"POLYGON", "POL POLYGON 多边形", "多边形面积",
-         "逐点描边，单击起点或双击闭合"},
-        {"CIRCLEAREA", "C CIR CIRCLE 圆 圆面积", "圆面积",
-         "圆周上三点确定圆，输出面积与周长"},
-        {"FILLED", "H FILL FILLED 填充 填充面积", "填充面积",
-         "单击闭合填充或轮廓内部"},
-        {"SIDEAREA", "SA SIDEAREA 侧面积", "侧面积",
-         "沿墙线连续选点，输出总长与侧面积"},
-        {"RADIUS", "RA RADIUS RAD 半径", "半径",
-         "圆周上三点，标注 R 值"},
-        {"ANGLE", "DAN ANG ANGLE DIMANGULAR 角度", "角度",
-         "三点夹角，标注 ∠ 值"},
-        {"ARCLENGTH", "DAR ARC ARCLENGTH DIMARC 弧长", "弧长",
-         "沿弧段测量弧长"},
-        {"TEXT", "T DT TEXT 文字", "文字标注",
-         "在图上点击位置后输入文字"},
-        {"CALIBRATE", "CAL CALIBRATE 校准 比例", "比例校准",
-         "用已知长度反算图纸比例"},
-        {"ZOOM", "Z ZOOM 缩放", "缩放",
-         "Z E 范围 · Z W 窗口 · Z I 放大 · Z O 缩小"},
-        {"FIT", "FIT ZE 全图 显示全图", "显示全图",
-         "充满窗口显示整张图纸"},
-        {"PAN", "P PAN 平移", "平移",
-         "空格或中键拖动平移，滚轮缩放"},
-        {"REGEN", "RE REGEN 重画", "重画",
-         "清除缓存并重绘当前视图"},
-        {"GRID", "GRID F7 栅格", "栅格",
-         "开 / 关背景栅格"},
-        {"SNAP", "SNAP OSNAP 捕捉", "对象捕捉",
-         "开 / 关对象捕捉"},
-        {"ORTHO", "OR ORTHO F8 正交", "正交",
-         "开 / 关正交约束"},
-        {"LAYER", "LA LAYER 图层", "图层管理",
-         "打开图层面板"},
-        {"UNITS", "UN UNITS 单位", "单位与精度",
-         "查看当前单位，可在右侧面板修改"},
-        {"SETTINGS", "OP OPTIONS DS DIMSTYLE SETTINGS 设置", "标注设置",
-         "打开标注样式与显示设置"},
-        {"PLOT", "PLOT PRINT 打印", "打印预览",
-         "框选打印范围并进入打印预览"},
-        {"PLOTFRAMES", "PF PLOTFRAMES 图框打印", "布局图框打印",
-         "布局中每个图框输出一页"},
-        {"PREVIEW", "PREVIEW 打印预览", "打印预览",
-         "打开打印预览面板"},
-        {"SAVE", "SAVE QSAVE 保存", "保存标注",
-         "保存当前图纸的测量标注"},
-        {"SAVEAS", "SAVEAS 另存为", "另存标注",
-         "将测量标注另存为文件"},
-        {"OPEN", "OPEN 打开", "打开图纸",
-         "选择 DWG / DXF / PDF 文件"},
-        {"CLOSE", "CLOSE 关闭", "关闭图纸",
-         "关闭当前图纸标签"},
-        {"UNDO", "U UNDO 撤销", "撤销",
-         "撤销上一步标注操作"},
-        {"REDO", "REDO 重做", "重做",
-         "重做被撤销的标注操作"},
-        {"MODEL", "MO MODEL 模型", "模型空间",
-         "切换到模型空间"},
-        {"LAYOUT", "LO LAYOUT 布局", "布局空间",
-         "切换到下一个布局"},
-        {"ANNOTOGGLE", "ANNO 标注显示", "标注显示",
-         "显示 / 隐藏全部标注"},
-        {"THEME", "THEME 主题", "切换主题",
-         "深色 / 浅色 / 深灰 / 蓝图轮换"},
-        {"VERSION", "VER VERSION 版本", "版本信息",
-         "查看版本与当前图纸信息"},
-        {"HELP", "? HELP 帮助 命令", "命令列表",
-         "列出全部命令、别名与用途"},
-        {"QUIT", "QUIT EXIT 退出", "退出程序",
-         "关闭速看CAD"}
-    };
-    return specs;
-}
-
-QStringList commandTokens(const CommandSpec &spec)
+ QStringList commandTokens(const CommandSpec &spec)
 {
     QStringList tokens;
     const QString raw = QString::fromUtf8(spec.tokens);
@@ -8875,14 +8491,6 @@ void MainWindow::executeCommand(const QString &raw)
             return;
         }
         m_deleteAllAction->trigger();
-        return;
-    }
-    if (id == QLatin1String("AUTOCALIBRATE")) {
-        if (!hasDocument) {
-            echoCommandError(QStringLiteral("没有打开的图纸。"));
-            return;
-        }
-        autoCalibrateDrawing();
         return;
     }
     if (id == QLatin1String("HELP")) {

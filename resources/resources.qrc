@@ -21,7 +21,6 @@
     <file>icons/rectangle.svg</file>
     <file>icons/polygon.svg</file>
     <file>icons/radius.svg</file>
-    <file>icons/diameter.svg</file>
     <file>icons/angle.svg</file>
     <file>icons/arc.svg</file>
     <file>icons/calibrate.svg</file>
@@ -38,11 +37,7 @@
     <file>icons/batch.svg</file>
     <file>icons/circle-area.svg</file>
     <file>icons/filled-area.svg</file>
-    <file>icons/coordinate.svg</file>
-    <file>icons/point-line.svg</file>
-    <file>icons/fixed-distance.svg</file>
     <file>icons/side-area.svg</file>
-    <file>icons/area-offset.svg</file>
     <file>icons/show-all.svg</file>
     <file>icons/hide-all.svg</file>
     <file>icons/settings.svg</file>

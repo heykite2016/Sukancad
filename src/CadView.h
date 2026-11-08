@@ -62,14 +62,9 @@ public:
         CircleArea,
         FilledArea,
         SideArea,
-        AreaOffset,
         Radius,
-        Diameter,
         Angle,
         ArcLength,
-        Coordinate,
-        PointToLine,
-        FixedDistance,
         PrintArea,
         Calibrate,
         Text,
@@ -303,8 +298,6 @@ private:
     void invalidateVectorCache();
     std::optional<Measurement> closedEntityMeasurementAt(
         const QPointF &screenPoint, MeasurementType type) const;
-    std::optional<QLineF> lineEntityAt(
-        const QPointF &screenPoint) const;
     std::optional<QLineF> circularRadiusAt(
         const QPointF &screenPoint) const;
     int arcEntityIndexAt(const QPointF &screenPoint) const;

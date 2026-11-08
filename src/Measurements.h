@@ -19,14 +19,9 @@ enum class MeasurementType {
     CircleArea,
     FilledArea,
     SideArea,
-    AreaOffset,
     Radius,
-    Diameter,
     Angle,
     ArcLength,
-    Coordinate,
-    PointToLine,
-    FixedDistance,
     Text
 };
 
@@ -85,10 +80,8 @@ struct DisplaySettings {
     AnnotationStyle annotationStyle = AnnotationStyle::Standard;
     MeasuringUnit lengthUnit = MeasuringUnit::Millimeter;
     MeasuringUnit areaUnit = MeasuringUnit::Meter;
-    MeasuringUnit coordinateUnit = MeasuringUnit::Millimeter;
     int lengthPrecision = 0;
     int areaPrecision = 2;
-    int coordinatePrecision = 0;
     // Multiplier applied to the drawing's native dimension-text height.
     // 1.0 keeps annotation text visually identical to source dimensions.
     double dimensionTextScale = 1.0;

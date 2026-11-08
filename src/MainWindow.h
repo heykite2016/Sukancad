@@ -116,14 +116,11 @@ private:
     void exportSvgAs();
     void requestTextAnnotation(const QPointF &position);
     void requestCalibration(double rawLength);
-    void autoCalibrateDrawing();
     void showAnnotationSettings();
     void showAnnotationSettingsLegacy();
     void showFileAssociationSettings();
     void showHelp();
     void showAbout();
-    void beginFixedDistance();
-    void beginAreaOffset();
     void beginSideArea();
     void requestPrint();
     void handlePrintArea(const QRectF &worldArea);
