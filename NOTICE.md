@@ -21,6 +21,8 @@ Copyright (C) 2026 Mr. 王嘉
   [resources/fonts/osifont.license](resources/fonts/osifont.license)
 - Noto Sans CJK SC：SIL Open Font License 1.1，见
   [resources/fonts/NotoSansCJKsc-LICENSE.txt](resources/fonts/NotoSansCJKsc-LICENSE.txt)
+- UnRAR：Android 端 RAR4/RAR5 解压使用官方 UnRAR 源码，许可见
+  [android/app/src/main/cpp/unrar/license.txt](android/app/src/main/cpp/unrar/license.txt)
 
 源码发布包包含构建本项目所需的项目源码、资源、测试、构建脚本和第三方
 源码。项目自身代码可依据 GPL-3.0-or-later 使用、修改和再发布。

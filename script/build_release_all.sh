@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# 一次产出 macOS + Windows 免安装发布包（两平台运行库全部随包，用户机器无需装任何依赖）。
+# 一次产出 macOS + Windows + Android 发布包。
 #
 # 用法：
 #   ./script/build_release_all.sh            # 两个平台都出
 #   ./script/build_release_all.sh macos      # 只出 macOS
 #   ./script/build_release_all.sh windows    # 只出 Windows
+#   ./script/build_release_all.sh android    # 只出 Android APK
 #
 # 依赖（首次需准备好的缓存）：
 #   macOS Qt 6.8.3：$HOME/Qt/6.8.3/macos 或 $CADLENS_MAC_QT_ROOT
@@ -91,18 +92,25 @@ build_windows() {
         "$ROOT_DIR/script/package_windows.sh"
 }
 
+build_android() {
+    echo "==> Android arm64 Release"
+    "$ROOT_DIR/script/build_android.sh" release
+}
+
 case "$TARGET" in
     macos)   build_macos ;;
     windows) build_windows ;;
-    all)     build_macos; build_windows ;;
-    *)       echo "用法: $0 [all|macos|windows]" >&2; exit 2 ;;
+    android) build_android ;;
+    all)     build_macos; build_windows; build_android ;;
+    *)       echo "用法: $0 [all|macos|windows|android]" >&2; exit 2 ;;
 esac
 
 VERSION="$(sed -n 's/^project(CadLens VERSION \([0-9.]*\).*/\1/p' "$ROOT_DIR/CMakeLists.txt")"
 (
     cd "$ROOT_DIR/dist"
     shasum -a 256 CadLens-"$VERSION"-*.dmg CadLens-"$VERSION"-*.pkg \
-        CadLens-"$VERSION"-*portable.zip 2>/dev/null \
+        CadLens-"$VERSION"-*portable.zip \
+        CadLens-"$VERSION"-android-arm64.apk 2>/dev/null \
         | tee "Sukancad-$VERSION-SHA256SUMS.txt"
 )
 echo "==> 完成，产物在 $ROOT_DIR/dist"

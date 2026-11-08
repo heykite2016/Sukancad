@@ -10,3 +10,8 @@ copyright-application/
 *.user
 .workbuddy/
 .codex/
+android/.gradle/
+android/local.properties
+android/app/.cxx/
+android/app/build/
+android/build/

@@ -1,0 +1,10 @@
+<resources>
+    <style name="Theme.Sukancad" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="android:statusBarColor">#1e2227</item>
+        <item name="android:windowBackground">#f3f4f6</item>
+    </style>
+    <style name="Theme.Sukancad.FullScreen">
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowBackground">#101318</item>
+    </style>
+</resources>

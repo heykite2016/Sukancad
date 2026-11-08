@@ -11,6 +11,9 @@
   · [DMG](https://github.com/heykite2016/Sukancad/releases/download/v2.0.1/CadLens-2.0.1-macos12-universal.dmg)
 - Windows 10+ x64：
   [免安装 ZIP](https://github.com/heykite2016/Sukancad/releases/download/v2.0.1/CadLens-2.0.1-windows10-x64-portable.zip)
+- Android arm64 核心移植版：
+  [APK](https://github.com/heykite2016/Sukancad/releases/download/v2.0.1/CadLens-2.0.1-android-arm64.apk)
+  · [移植范围](ANDROID.md)
 - [SHA-256 与全部发布文件](https://github.com/heykite2016/Sukancad/releases/tag/v2.0.1)
 - Gitee：[源码](https://gitee.com/FanieWang/Sukancad) · [发布页](https://gitee.com/FanieWang/Sukancad/releases/tag/v2.0.1)
 
@@ -27,6 +30,7 @@ macOS 为 ad-hoc 签名，未做 Developer ID 公证。Windows 包未使用商�
 - 输出：SVG、600/1200/2400 DPI 打印、多页打印、打印到 PDF、布局图框批量打印。
 - 命令行只接受英文 ASCII 命令；测量与标注自动保存到本机。
 - 原始图纸始终只读，不会写回 DWG、DXF 或 PDF。
+- Android 端已移植 DWG/DXF 解析、布局、图层、外部参照、测量与标注核心；PDF 尚未移植。
 
 当前 UI 不提供坐标标注、直径标注、点到线距离、定距标注和偏移面积；对应代码中的旧处理分支不会出现在工具栏或命令行。
 
@@ -79,6 +83,7 @@ ctest --test-dir build --output-on-failure
 - [使用说明](USAGE.md)
 - [数据与缓存](DATA_STORAGE.md)
 - [构建](BUILDING.md)
+- [Android 移植](ANDROID.md)
 - [发布](RELEASE.md)
 - [版本记录](CHANGELOG.md)
 - [参与贡献](CONTRIBUTING.md)
