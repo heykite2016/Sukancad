@@ -1,6 +1,6 @@
 # 构建与依赖
 
-本文记录速看CAD `2.0.3` 已验证的构建方式。项目主要开发和发布环境为 macOS；Windows x64 通过 llvm-mingw 交叉编译。
+本文记录速看CAD `2.0.4` 已验证的构建方式。项目主要开发和发布环境为 macOS；Windows x64 通过 llvm-mingw 交叉编译。
 
 ## 工具链
 
@@ -13,14 +13,27 @@
 - PDFium `158.0.8125.0`
 - C++20
 
-项目不会把 Qt 和 PDFium 安装到仓库目录。默认缓存路径如下：
+项目不会把 Qt 和 PDFium 安装到仓库目录。Qt 统一放在 libshare 依赖目录，
+PDFium 使用用户缓存目录：
 
 ```text
-~/Library/Caches/CadLens/Qt/6.8.3/macos
+~/Documents/libshare/Qt/6.8.3/macos
 ~/Library/Caches/CadLens/pdfium/chromium-8125-mac-univ
 ```
 
-可通过 `QT_ROOT` 和 `CADLENS_MAC_PDFIUM_ROOT` 覆盖。
+`~/Documents/libshare/bin` 已软链 `qmake`、`moc`、`uic`、`rcc`、`macdeployqt`
+等工具，`~/.zshrc` 导出 `QT_ROOT="$LIBSHARE/Qt/6.8.3/macos"`。也可通过
+`QT_ROOT` 和 `CADLENS_MAC_PDFIUM_ROOT` 覆盖。
+
+## 获取 Qt
+
+```bash
+python3 -m pip install --user aqtinstall
+python3 -m aqt install-qt mac desktop 6.8.3 clang_64 \
+  -O "$HOME/Documents/libshare/Qt"
+```
+
+Qt 6.8.3 自带 `QtSvg`，无需额外安装模块。
 
 ## 获取 PDFium
 
@@ -41,7 +54,7 @@ tar -xzf "$pdfium_root/pdfium-mac-univ.tgz" -C "$pdfium_root"
 
 ```bash
 export DEVELOPER_DIR="${CADLENS_DEVELOPER_DIR:-/Library/Developer/CommandLineTools}"
-export QT_ROOT="$HOME/Library/Caches/CadLens/Qt/6.8.3/macos"
+export QT_ROOT="$HOME/Documents/libshare/Qt/6.8.3/macos"
 export CADLENS_MAC_PDFIUM_ROOT="$HOME/Library/Caches/CadLens/pdfium/chromium-8125-mac-univ"
 
 ./script/build_and_run.sh
@@ -113,8 +126,8 @@ export CADLENS_MAC_PDFIUM_ROOT="$HOME/Library/Caches/CadLens/pdfium/chromium-812
 
 ```text
 dist/CadLens.app
-dist/CadLens-2.0.3-macos12-universal.dmg
-dist/CadLens-2.0.3-macos12-universal.pkg
+dist/CadLens-2.0.4-macos12-universal.dmg
+dist/CadLens-2.0.4-macos12-universal.pkg
 ```
 
 macOS 最低版本为 `12.0`，架构为 `x86_64` 和 `arm64`。本地发布脚本使用 ad-hoc hardened runtime 签名，不能替代 Developer ID 签名和 Apple 公证。
@@ -157,7 +170,7 @@ CADLENS_WIN_BUILD_DIR="$PWD/build-win64-release" \
 产物为：
 
 ```text
-dist/CadLens-2.0.3-windows10-x64-portable.zip
+dist/CadLens-2.0.4-windows10-x64-portable.zip
 ```
 
 包内包含 Qt、PDFium 和 MinGW 运行库。LibreDWG、libdxfrw 和 libiconv 静态链接进程序。

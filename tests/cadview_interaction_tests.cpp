@@ -1535,6 +1535,71 @@ int main(int argc, char *argv[])
         return fail("paper viewport was identified by id instead of geometry");
     }
 
+    // Structural drawings (the Shifang 4# plan, for instance) can store
+    // every model viewport of a layout with on_off == 0 while CAD still
+    // displays the model through them. A layout with no "on" viewport must
+    // fall back to composing the usable ones; when one viewport is on, the
+    // off ones stay hidden.
+    auto offViewportDocument = std::make_shared<CadDocument>();
+    offViewportDocument->bounds = QRectF(0.0, 0.0, 1000.0, 800.0);
+    CadLayer offViewportLayer;
+    offViewportLayer.name = QStringLiteral("OFF_VIEWPORT");
+    offViewportDocument->layers.append(offViewportLayer);
+    CadEntity offViewportLine;
+    offViewportLine.layer = offViewportLayer.name;
+    offViewportLine.type = CadEntityType::Segment;
+    offViewportLine.points = {
+        QPointF(100.0, 400.0), QPointF(900.0, 400.0)
+    };
+    offViewportLine.updateBounds();
+    offViewportDocument->entities.append(offViewportLine);
+    offViewportDocument->layouts.append(QStringLiteral("关闭视口布局"));
+    offViewportDocument->layoutEntities.insert(
+        QStringLiteral("关闭视口布局"), QVector<CadEntity>{});
+    CadViewportDefinition paperViewport;
+    paperViewport.center = QPointF(500.0, 400.0);
+    paperViewport.windowSize = QSizeF(1000.0, 800.0);
+    paperViewport.modelCenter = QPointF(500.0, 400.0);
+    paperViewport.viewHeight = 800.0;
+    paperViewport.overallPaperViewport = true;
+    paperViewport.revealsModel = false;
+    CadViewportDefinition offModelViewport;
+    offModelViewport.center = QPointF(500.0, 400.0);
+    offModelViewport.windowSize = QSizeF(1000.0, 800.0);
+    offModelViewport.modelCenter = QPointF(500.0, 400.0);
+    offModelViewport.viewHeight = 800.0;
+    offModelViewport.on = false;
+    offModelViewport.status = 0;
+    offModelViewport.revealsModel = false;
+    offViewportDocument->layoutViewports.insert(
+        QStringLiteral("关闭视口布局"),
+        QVector<CadViewportDefinition>{paperViewport, offModelViewport});
+    const auto offLayout = CadView::composeLayoutContent(
+        *offViewportDocument, offViewportDocument->entities,
+        QStringLiteral("关闭视口布局"));
+    if (offLayout.size() != 1
+        || !near(offLayout.first().clipRect.center().x(), 500.0)) {
+        return fail("layout skipped every viewport stored as off");
+    }
+    CadViewportDefinition onModelViewport = offModelViewport;
+    onModelViewport.center = QPointF(1000.0, 800.0);
+    onModelViewport.windowSize = QSizeF(500.0, 400.0);
+    onModelViewport.viewHeight = 400.0;
+    onModelViewport.on = true;
+    onModelViewport.status = 1;
+    onModelViewport.revealsModel = true;
+    offViewportDocument->layoutViewports[
+        QStringLiteral("关闭视口布局")] = {
+        paperViewport, offModelViewport, onModelViewport
+    };
+    const auto onLayout = CadView::composeLayoutContent(
+        *offViewportDocument, offViewportDocument->entities,
+        QStringLiteral("关闭视口布局"));
+    if (onLayout.size() != 1
+        || !near(onLayout.first().clipRect.center().x(), 1000.0)) {
+        return fail("layout ignored the on/off viewport switch");
+    }
+
     auto fittedTextDocument = std::make_shared<CadDocument>();
     fittedTextDocument->bounds = QRectF(0.0, 0.0, 1000.0, 800.0);
     fittedTextDocument->layers.append(layer);

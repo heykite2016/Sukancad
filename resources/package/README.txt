@@ -1,4 +1,4 @@
-速看CAD 2.0.3
+速看CAD 2.0.4
 ================
 
 支持系统
@@ -7,7 +7,7 @@
 
 安装
 - macOS：安装 PKG，或打开 DMG 后将 CadLens.app 复制到 Applications。
-- Windows：解压 CadLens-2.0.3-windows10-x64-portable.zip，运行
+- Windows：解压 CadLens-2.0.4-windows10-x64-portable.zip，运行
   CadLens/CadLens.exe。无需另装 Qt 或其他运行库。
 
 当前功能
@@ -47,6 +47,6 @@
 许可与签名
 - 项目许可：GPL-3.0-or-later。
 - 完整许可与第三方声明见源码仓库 LICENSE、NOTICE.md 和 third_party/。
-- 校验值见 Sukancad-2.0.3-SHA256SUMS.txt。
+- 校验值见 Sukancad-2.0.4-SHA256SUMS.txt。
 - macOS 为 ad-hoc 签名，未做 Apple Developer ID 公证。
 - Windows 未使用商业代码签名证书。

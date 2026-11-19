@@ -6135,13 +6135,41 @@ QVector<CadEntity> CadView::composeLayoutContent(
     const bool dbgVp4 =
         qEnvironmentVariableIsSet("CADLENS_DEBUG_VP4");
     QHash<int, QHash<QString, int>> vp4DrawnByLayer;
+    // A viewport we can project through: it has a paper window and a model
+    // height, and it is not the 1:1 "whole sheet" viewport that would redraw
+    // the model on top of the real view.
+    const auto usableViewport = [](const CadViewportDefinition &viewport) {
+        return viewport.viewHeight > 1.0e-12
+            && viewport.windowSize.width() > 1.0e-9
+            && viewport.windowSize.height() > 1.0e-9
+            && !viewport.overallPaperViewport;
+    };
+    // Some drawings (structural plans in particular) store every model
+    // viewport of a layout with on_off == 0 (DXF group 68), yet CAD still
+    // displays the model through them. Skipping them leaves just the
+    // paper-space title text -- e.g. the Shifang 4# building plan has 7 of
+    // its 8 layouts in this state, so those layouts look "incomplete".
+    // Whenever a layout has no viewport marked as on, fall back to composing
+    // all usable model viewports. If at least one is on, keep respecting the
+    // author's switches. CADLENS_VIEWPORT_ALL=1 forces the fallback for
+    // comparisons.
+    bool hasRevealingViewport = false;
+    for (const CadViewportDefinition &viewport : viewports) {
+        if (usableViewport(viewport) && viewport.revealsModel) {
+            hasRevealingViewport = true;
+            break;
+        }
+    }
+    const bool composeAllViewports =
+        qEnvironmentVariableIsSet("CADLENS_VIEWPORT_ALL");
     int vpIndex = 0;
     for (const CadViewportDefinition &viewport : viewports) {
         const int thisVp = vpIndex++;
-        if (!viewport.revealsModel
-            || viewport.viewHeight <= 1.0e-12
-            || viewport.windowSize.width() <= 1.0e-9
-            || viewport.windowSize.height() <= 1.0e-9) {
+        if (!usableViewport(viewport)) {
+            continue;
+        }
+        if (!composeAllViewports && hasRevealingViewport
+            && !viewport.revealsModel) {
             continue;
         }
         const double viewScale =

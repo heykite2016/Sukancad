@@ -11,6 +11,7 @@ APP_DIST="$DIST_DIR/$APP_NAME.app"
 MAC_PDFIUM="${CADLENS_MAC_PDFIUM_ROOT:-$HOME/Library/Caches/CadLens/pdfium/chromium-8125-mac-univ}"
 if [[ -z "${QT_ROOT:-}" ]]; then
     for candidate in \
+        "$HOME/Documents/libshare/Qt/6.8.3/macos" \
         "$HOME/Qt/6.8.3/macos" \
         "$HOME/Library/Caches/CadLens/Qt/6.8.3/macos" \
         "$ROOT_DIR/.qt/6.8.3/macos"
